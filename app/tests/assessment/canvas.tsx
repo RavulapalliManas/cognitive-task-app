@@ -20,7 +20,7 @@ interface AssessmentCanvasProps {
     submissions: any[];
     trueOrder: number[];
     mistakes: number;
-    onNextCountdown: (show: boolean) => void;
+    onNextCountdown?: (show: boolean) => void;
 }
 
 export default function AssessmentCanvas({ 
@@ -43,10 +43,11 @@ export default function AssessmentCanvas({
     const [flashingPoints, setFlashingPoints] = useState<Set<number>>(new Set());
     const [nextFlashTime, setNextFlashTime] = useState<number | null>(null);
     
-    const CANVAS_WIDTH = 1000;
-    const CANVAS_HEIGHT = 700;
-    const POINT_RADIUS = 8;
-    const HOVER_RADIUS = 12;
+    const CANVAS_WIDTH = 1200;
+    const CANVAS_HEIGHT = 800;
+    const POINT_RADIUS = 18;
+    const HOVER_RADIUS = 24;
+    const PADDING = 60; // Padding to keep points away from canvas edges
 
     // Track clicked points
     useEffect(() => {
@@ -81,13 +82,13 @@ export default function AssessmentCanvas({
                 if (nextFlash !== null) {
                     const secondsUntilNext = Math.floor((nextFlash - elapsed) / 1000);
                     if (secondsUntilNext <= 20 && secondsUntilNext > 0) {
-                        onNextCountdown(true);
+                        onNextCountdown?.(true);
                     } else {
-                        onNextCountdown(false);
+                        onNextCountdown?.(false);
                     }
                     setNextFlashTime(nextFlash);
                 } else {
-                    onNextCountdown(false);
+                    onNextCountdown?.(false);
                     setNextFlashTime(null);
                 }
             };
@@ -98,8 +99,14 @@ export default function AssessmentCanvas({
     }, [testType, highlightSchedule, startTime, onNextCountdown]);
 
     // Calculate drift offset for attention test
-    const getDriftOffset = useCallback((baseX: number, baseY: number, currentTime: number): [number, number] => {
+    const getDriftOffset = useCallback((pointIndex: number, baseX: number, baseY: number, currentTime: number): [number, number] => {
         if (testType !== "attention" || !driftParameters || !startTime) {
+            return [0, 0];
+        }
+
+        // Check if this specific point should drift
+        const driftingIndices = driftParameters.driftingIndices || [];
+        if (!driftingIndices.includes(pointIndex)) {
             return [0, 0];
         }
 
@@ -132,8 +139,8 @@ export default function AssessmentCanvas({
 
             // Draw connection lines for completed sequence
             if (submissions.length > 1) {
-                ctx.strokeStyle = "rgba(59, 130, 246, 0.3)";
-                ctx.lineWidth = 2;
+                ctx.strokeStyle = "rgba(59, 130, 246, 0.5)";
+                ctx.lineWidth = 3;
                 ctx.beginPath();
                 
                 for (let i = 0; i < submissions.length - 1; i++) {
@@ -143,29 +150,52 @@ export default function AssessmentCanvas({
                     const toPoint = points.find(p => p.index === toIndex);
                     
                     if (fromPoint && toPoint) {
-                        const [fromDriftX, fromDriftY] = getDriftOffset(fromPoint.x, fromPoint.y, timestamp);
-                        const [toDriftX, toDriftY] = getDriftOffset(toPoint.x, toPoint.y, timestamp);
+                        const [fromDriftX, fromDriftY] = getDriftOffset(fromIndex, fromPoint.x, fromPoint.y, timestamp);
+                        const [toDriftX, toDriftY] = getDriftOffset(toIndex, toPoint.x, toPoint.y, timestamp);
+                        
+                        const fromX = PADDING + fromPoint.x * (CANVAS_WIDTH - 2 * PADDING) + fromDriftX;
+                        const fromY = PADDING + fromPoint.y * (CANVAS_HEIGHT - 2 * PADDING) + fromDriftY;
+                        const toX = PADDING + toPoint.x * (CANVAS_WIDTH - 2 * PADDING) + toDriftX;
+                        const toY = PADDING + toPoint.y * (CANVAS_HEIGHT - 2 * PADDING) + toDriftY;
                         
                         if (i === 0) {
-                            ctx.moveTo(
-                                fromPoint.x * CANVAS_WIDTH + fromDriftX, 
-                                fromPoint.y * CANVAS_HEIGHT + fromDriftY
-                            );
+                            ctx.moveTo(fromX, fromY);
                         }
-                        ctx.lineTo(
-                            toPoint.x * CANVAS_WIDTH + toDriftX, 
-                            toPoint.y * CANVAS_HEIGHT + toDriftY
-                        );
+                        ctx.lineTo(toX, toY);
                     }
                 }
+                
+                // Close the polygon if all points are clicked
+                if (submissions.length === trueOrder.length) {
+                    const lastIndex = submissions[submissions.length - 1].selected_index;
+                    const firstIndex = submissions[0].selected_index;
+                    const lastPoint = points.find(p => p.index === lastIndex);
+                    const firstPoint = points.find(p => p.index === firstIndex);
+                    
+                    if (lastPoint && firstPoint) {
+                        const [lastDriftX, lastDriftY] = getDriftOffset(lastIndex, lastPoint.x, lastPoint.y, timestamp);
+                        const [firstDriftX, firstDriftY] = getDriftOffset(firstIndex, firstPoint.x, firstPoint.y, timestamp);
+                        
+                        const lastX = PADDING + lastPoint.x * (CANVAS_WIDTH - 2 * PADDING) + lastDriftX;
+                        const lastY = PADDING + lastPoint.y * (CANVAS_HEIGHT - 2 * PADDING) + lastDriftY;
+                        const firstX = PADDING + firstPoint.x * (CANVAS_WIDTH - 2 * PADDING) + firstDriftX;
+                        const firstY = PADDING + firstPoint.y * (CANVAS_HEIGHT - 2 * PADDING) + firstDriftY;
+                        
+                        ctx.lineTo(firstX, firstY);
+                        ctx.strokeStyle = "rgba(34, 197, 94, 0.7)"; // Green for closing line
+                        ctx.lineWidth = 4;
+                    }
+                }
+                
                 ctx.stroke();
             }
 
             // Draw points
             points.forEach((point, idx) => {
-                const [driftX, driftY] = getDriftOffset(point.x, point.y, timestamp);
-                const x = point.x * CANVAS_WIDTH + driftX;
-                const y = point.y * CANVAS_HEIGHT + driftY;
+                const [driftX, driftY] = getDriftOffset(point.index, point.x, point.y, timestamp);
+                // Add padding to keep points within canvas bounds
+                const x = PADDING + point.x * (CANVAS_WIDTH - 2 * PADDING) + driftX;
+                const y = PADDING + point.y * (CANVAS_HEIGHT - 2 * PADDING) + driftY;
                 
                 const isClicked = clickedPoints.has(point.index);
                 const isHovered = hoveredPoint === point.index;
@@ -232,14 +262,14 @@ export default function AssessmentCanvas({
 
                 // Draw label if exists and not hidden
                 if (point.label) {
-                    ctx.font = "bold 16px system-ui";
+                    ctx.font = "bold 24px system-ui";
                     ctx.textAlign = "center";
                     ctx.textBaseline = "middle";
                     ctx.fillStyle = isClicked ? "#ffffff" : "#1f2937";
                     ctx.fillText(point.label, x, y);
                 } else if (testType === "memory" && !isClicked) {
                     // Show question mark for hidden labels
-                    ctx.font = "bold 14px system-ui";
+                    ctx.font = "bold 22px system-ui";
                     ctx.textAlign = "center";
                     ctx.textBaseline = "middle";
                     ctx.fillStyle = "#9ca3af";
@@ -249,10 +279,10 @@ export default function AssessmentCanvas({
                 // Draw sequence number for clicked points
                 if (isClicked) {
                     const sequenceNum = submissions.findIndex(s => s.selected_index === point.index) + 1;
-                    ctx.font = "bold 12px system-ui";
+                    ctx.font = "bold 16px system-ui";
                     ctx.fillStyle = "#ffffff";
                     ctx.beginPath();
-                    ctx.arc(x + radius - 2, y - radius + 2, 10, 0, Math.PI * 2);
+                    ctx.arc(x + radius - 2, y - radius + 2, 14, 0, Math.PI * 2);
                     ctx.fillStyle = "#1f2937";
                     ctx.fill();
                     ctx.fillStyle = "#ffffff";
@@ -288,9 +318,9 @@ export default function AssessmentCanvas({
         const currentTime = performance.now();
 
         for (const point of points) {
-            const [driftX, driftY] = getDriftOffset(point.x, point.y, currentTime);
-            const px = point.x * CANVAS_WIDTH + driftX;
-            const py = point.y * CANVAS_HEIGHT + driftY;
+            const [driftX, driftY] = getDriftOffset(point.index, point.x, point.y, currentTime);
+            const px = PADDING + point.x * (CANVAS_WIDTH - 2 * PADDING) + driftX;
+            const py = PADDING + point.y * (CANVAS_HEIGHT - 2 * PADDING) + driftY;
             const dist = Math.sqrt((mouseX - px) ** 2 + (mouseY - py) ** 2);
 
             if (dist <= HOVER_RADIUS) {
@@ -314,9 +344,9 @@ export default function AssessmentCanvas({
         const currentTime = performance.now();
 
         for (const point of points) {
-            const [driftX, driftY] = getDriftOffset(point.x, point.y, currentTime);
-            const px = point.x * CANVAS_WIDTH + driftX;
-            const py = point.y * CANVAS_HEIGHT + driftY;
+            const [driftX, driftY] = getDriftOffset(point.index, point.x, point.y, currentTime);
+            const px = PADDING + point.x * (CANVAS_WIDTH - 2 * PADDING) + driftX;
+            const py = PADDING + point.y * (CANVAS_HEIGHT - 2 * PADDING) + driftY;
             const dist = Math.sqrt((mouseX - px) ** 2 + (mouseY - py) ** 2);
 
             if (dist <= HOVER_RADIUS) {

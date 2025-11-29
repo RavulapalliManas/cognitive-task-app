@@ -59,7 +59,7 @@ export default function RegisterPage() {
     setIsSubmitting(true);
 
     try {
-      const user = registerUser(
+      const user = await registerUser(
         formData.name.trim(),
         parseInt(formData.age),
         formData.country,
@@ -124,7 +124,7 @@ export default function RegisterPage() {
                       </div>
                       <Button
                         size="lg"
-                        className="w-full bg-white text-blue-600 font-bold hover:bg-gray-100"
+                        className="w-full bg-white text-blue-600 font-bold hover:bg-gray-100 rounded-2xl"
                         onClick={handleCopyCode}
                       >
                         📋 Copy Code to Clipboard
@@ -147,7 +147,7 @@ export default function RegisterPage() {
 
                     <Button
                       size="lg"
-                      className="w-full py-7 text-xl font-bold text-white bg-green-600 hover:bg-green-700 shadow-lg"
+                      className="w-full py-7 text-xl font-bold text-white bg-green-600 hover:bg-green-700 shadow-lg rounded-2xl"
                       onClick={handleContinue}
                     >
                       Continue to Assessment →
@@ -252,6 +252,11 @@ export default function RegisterPage() {
                         listboxWrapper: "max-h-[400px]",
                         popoverContent: "bg-white dark:bg-gray-800",
                       }}
+                      listboxProps={{
+                        itemClasses: {
+                          base: "data-[hover=true]:bg-blue-100 dark:data-[hover=true]:bg-blue-900 text-gray-900 dark:text-white",
+                        },
+                      }}
                       isRequired
                     >
                       {countries.map((country) => (
@@ -280,6 +285,11 @@ export default function RegisterPage() {
                         listboxWrapper: "max-h-[400px]",
                         popoverContent: "bg-white dark:bg-gray-800",
                       }}
+                      listboxProps={{
+                        itemClasses: {
+                          base: "data-[hover=true]:bg-blue-100 dark:data-[hover=true]:bg-blue-900 text-gray-900 dark:text-white",
+                        },
+                      }}
                       isRequired
                     >
                       <SelectItem key="Male">Male</SelectItem>
@@ -302,7 +312,7 @@ export default function RegisterPage() {
                       type="button"
                       size="lg"
                       variant="bordered"
-                      className="flex-1 py-6 text-lg font-bold border-2 border-gray-300 dark:border-gray-700"
+                      className="flex-1 py-6 text-lg font-bold border-2 border-gray-300 dark:border-gray-700 text-gray-900 dark:text-white rounded-2xl"
                       onClick={() => router.back()}
                     >
                       ← Back
@@ -310,7 +320,7 @@ export default function RegisterPage() {
                     <Button
                       type="submit"
                       size="lg"
-                      className="flex-1 py-6 text-lg font-bold text-white bg-blue-600 hover:bg-blue-700"
+                      className="flex-1 py-6 text-lg font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-2xl"
                       isLoading={isSubmitting}
                     >
                       Create Account

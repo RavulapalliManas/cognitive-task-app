@@ -30,9 +30,57 @@ export function useAssessment() {
         } else if (type === "memory") {
             // For memory test, show 75% of labels initially
             data = await generatePartial(level, sublevel, 0.75);
+            
+            // Select random 30% of points to flash
+            if (data.points && data.points.length > 0) {
+                const numToFlash = Math.max(1, Math.floor(data.points.length * 0.3));
+                const indices = data.points.map((_: any, i: number) => i);
+                const shuffled = indices.sort(() => Math.random() - 0.5);
+                const selectedIndices = shuffled.slice(0, numToFlash);
+                
+                // Create flash schedule for selected points
+                const schedule: any[] = [];
+                selectedIndices.forEach((idx: number, scheduleIdx: number) => {
+                    schedule.push({
+                        index: idx,
+                        start_ms: scheduleIdx * 5000, // Flash every 5 seconds
+                        duration_ms: 1000 // Flash for 1 second
+                    });
+                });
+                
+                data.highlight_schedule = schedule;
+            }
         } else if (type === "attention") {
             // For attention test, add drift and highlights
             data = await generateAttention(level, sublevel, 0.01, 0.5, 0.15);
+            
+            // Override to select only 1-2 random points to drift
+            if (data.points && data.points.length > 0) {
+                const numToDrift = Math.random() > 0.5 ? 2 : 1;
+                const indices = data.points.map((_: any, i: number) => i);
+                const shuffled = indices.sort(() => Math.random() - 0.5);
+                const driftingIndices = shuffled.slice(0, numToDrift);
+                
+                // Store which points should drift
+                data.driftParameters = {
+                    amplitude: 0.01,
+                    frequency: 0.5,
+                    driftingIndices // Only these indices will drift
+                };
+                
+                // Create random highlight schedule for 1-2 points
+                const numToHighlight = Math.random() > 0.5 ? 2 : 1;
+                const highlightIndices = shuffled.slice(numToDrift, numToDrift + numToHighlight);
+                const schedule: any[] = [];
+                highlightIndices.forEach((idx: number, scheduleIdx: number) => {
+                    schedule.push({
+                        index: idx,
+                        start_ms: scheduleIdx * 4000 + 2000, // Offset start
+                        duration_ms: 800
+                    });
+                });
+                data.highlight_schedule = schedule;
+            }
         } else {
             data = await generatePolygon(level, sublevel);
         }

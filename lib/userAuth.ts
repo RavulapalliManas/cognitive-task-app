@@ -1,7 +1,17 @@
 /**
- * Local User Authentication System
- * Manages user registration, login, and session storage using browser localStorage
+ * User Authentication System
+ * Uses IndexedDB (NoSQL) for primary storage with localStorage fallback
  */
+
+import {
+  createUser as dbCreateUser,
+  getUserByCode as dbGetUserByCode,
+  updateUserLogin,
+  createSession,
+  getSession,
+  deleteSession,
+  type User as DBUser,
+} from './database';
 
 export interface User {
   id: string;
@@ -15,7 +25,6 @@ export interface User {
   assessmentHistory: string[];
 }
 
-const USERS_STORAGE_KEY = 'cogni_users';
 const CURRENT_USER_KEY = 'cogni_current_user';
 
 /**
@@ -31,36 +40,24 @@ export function generateUserCode(): string {
 }
 
 /**
- * Get all users from localStorage
- */
-function getAllUsers(): User[] {
-  if (typeof window === 'undefined') return [];
-  const stored = localStorage.getItem(USERS_STORAGE_KEY);
-  return stored ? JSON.parse(stored) : [];
-}
-
-/**
- * Save users to localStorage
- */
-function saveUsers(users: User[]): void {
-  if (typeof window === 'undefined') return;
-  localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(users));
-}
-
-/**
  * Check if a code is already in use
  */
-export function isCodeTaken(code: string): boolean {
-  const users = getAllUsers();
-  return users.some(user => user.code === code);
+export async function isCodeTaken(code: string): Promise<boolean> {
+  try {
+    const user = await dbGetUserByCode(code.toUpperCase());
+    return user !== undefined;
+  } catch (error) {
+    console.error('Error checking code:', error);
+    return false;
+  }
 }
 
 /**
  * Generate a unique code that doesn't exist yet
  */
-export function generateUniqueCode(): string {
+export async function generateUniqueCode(): Promise<string> {
   let code = generateUserCode();
-  while (isCodeTaken(code)) {
+  while (await isCodeTaken(code)) {
     code = generateUserCode();
   }
   return code;
@@ -69,14 +66,13 @@ export function generateUniqueCode(): string {
 /**
  * Register a new user
  */
-export function registerUser(
+export async function registerUser(
   name: string,
   age: number,
   country: string,
   sex: string
-): User {
-  const users = getAllUsers();
-  const code = generateUniqueCode();
+): Promise<User> {
+  const code = await generateUniqueCode();
   const timestamp = Date.now();
 
   const newUser: User = {
@@ -91,28 +87,66 @@ export function registerUser(
     assessmentHistory: [],
   };
 
-  users.push(newUser);
-  saveUsers(users);
-  setCurrentUser(newUser);
+  try {
+    // Save to IndexedDB
+    await dbCreateUser({
+      code: newUser.code,
+      name: newUser.name,
+      age: newUser.age,
+      gender: newUser.sex,
+      createdAt: newUser.registeredAt,
+      lastLogin: newUser.lastLogin,
+    });
 
-  return newUser;
+    // Create session
+    await createSession(newUser.code, 24);
+
+    // Set current user in localStorage for quick access
+    setCurrentUser(newUser);
+
+    return newUser;
+  } catch (error) {
+    console.error('Error registering user:', error);
+    throw new Error('Failed to register user');
+  }
 }
 
 /**
  * Verify user code and log them in
  */
-export function loginUser(code: string): User | null {
-  const users = getAllUsers();
-  const user = users.find(u => u.code.toUpperCase() === code.toUpperCase());
+export async function loginUser(code: string): Promise<User | null> {
+  try {
+    const dbUser = await dbGetUserByCode(code.toUpperCase());
+    
+    if (dbUser) {
+      // Update last login time
+      await updateUserLogin(code.toUpperCase());
+      
+      // Create session
+      await createSession(code.toUpperCase(), 24);
 
-  if (user) {
-    user.lastLogin = Date.now();
-    saveUsers(users);
-    setCurrentUser(user);
-    return user;
+      // Convert DB user to User format
+      const user: User = {
+        id: `user_${dbUser.createdAt}`,
+        code: dbUser.code,
+        name: dbUser.name,
+        age: dbUser.age,
+        country: 'N/A', // Not stored in DB yet
+        sex: dbUser.gender,
+        registeredAt: dbUser.createdAt,
+        lastLogin: Date.now(),
+        assessmentHistory: [],
+      };
+
+      setCurrentUser(user);
+      return user;
+    }
+
+    return null;
+  } catch (error) {
+    console.error('Error logging in user:', error);
+    return null;
   }
-
-  return null;
 }
 
 /**
@@ -135,8 +169,18 @@ export function getCurrentUser(): User | null {
 /**
  * Logout current user
  */
-export function logoutUser(): void {
+export async function logoutUser(): Promise<void> {
   if (typeof window === 'undefined') return;
+  
+  const user = getCurrentUser();
+  if (user) {
+    try {
+      await deleteSession(user.code);
+    } catch (error) {
+      console.error('Error deleting session:', error);
+    }
+  }
+  
   localStorage.removeItem(CURRENT_USER_KEY);
 }
 
@@ -150,31 +194,39 @@ export function isLoggedIn(): boolean {
 /**
  * Update user's assessment history
  */
-export function addAssessmentToHistory(assessmentId: string): void {
+export async function addAssessmentToHistory(assessmentId: string): Promise<void> {
   const currentUser = getCurrentUser();
   if (!currentUser) return;
 
-  const users = getAllUsers();
-  const userIndex = users.findIndex(u => u.id === currentUser.id);
-
-  if (userIndex !== -1) {
-    users[userIndex].assessmentHistory.push(assessmentId);
-    saveUsers(users);
-    setCurrentUser(users[userIndex]);
-  }
+  // Update in-memory user
+  currentUser.assessmentHistory.push(assessmentId);
+  setCurrentUser(currentUser);
 }
 
 /**
  * Get user by code (for verification)
  */
-export function getUserByCode(code: string): User | null {
-  const users = getAllUsers();
-  return users.find(u => u.code.toUpperCase() === code.toUpperCase()) || null;
-}
-
-/**
- * Get total number of registered users
- */
-export function getTotalUsers(): number {
-  return getAllUsers().length;
+export async function getUserByCode(code: string): Promise<User | null> {
+  try {
+    const dbUser = await dbGetUserByCode(code.toUpperCase());
+    
+    if (dbUser) {
+      return {
+        id: `user_${dbUser.createdAt}`,
+        code: dbUser.code,
+        name: dbUser.name,
+        age: dbUser.age,
+        country: 'N/A',
+        sex: dbUser.gender,
+        registeredAt: dbUser.createdAt,
+        lastLogin: dbUser.lastLogin,
+        assessmentHistory: [],
+      };
+    }
+    
+    return null;
+  } catch (error) {
+    console.error('Error getting user by code:', error);
+    return null;
+  }
 }

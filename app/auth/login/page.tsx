@@ -69,8 +69,8 @@ export default function LoginPage() {
     setIsLoading(true);
     setError("");
 
-    setTimeout(() => {
-      const user = loginUser(enteredCode);
+    try {
+      const user = await loginUser(enteredCode);
 
       if (user) {
         router.push("/tests/assessment");
@@ -80,7 +80,11 @@ export default function LoginPage() {
         inputRefs.current[0]?.focus();
         setIsLoading(false);
       }
-    }, 500);
+    } catch (error) {
+      console.error("Login error:", error);
+      setError("Login failed. Please try again.");
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -168,7 +172,7 @@ export default function LoginPage() {
                       type="button"
                       size="lg"
                       variant="bordered"
-                      className="flex-1 py-6 text-lg"
+                      className="flex-1 py-6 text-lg font-bold border-2 text-gray-900 dark:text-white rounded-2xl"
                       onClick={() => router.back()}
                     >
                       ← Back
@@ -176,7 +180,7 @@ export default function LoginPage() {
                     <Button
                       type="submit"
                       size="lg"
-                      className="flex-1 py-6 text-lg font-bold text-white bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 disabled:opacity-50"
+                      className="flex-1 py-6 text-lg font-bold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-2xl"
                       isLoading={isLoading}
                       isDisabled={code.join("").length !== 6}
                     >
@@ -192,7 +196,7 @@ export default function LoginPage() {
                   <Button
                     variant="light"
                     size="lg"
-                    className="w-full text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20"
+                    className="w-full text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 font-bold rounded-2xl"
                     onClick={() => router.push("/auth/register")}
                   >
                     Register as New User →

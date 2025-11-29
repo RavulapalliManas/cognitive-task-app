@@ -14,10 +14,7 @@ export default function TestsPage() {
 
   useEffect(() => {
     setMounted(true);
-    if (isLoggedIn()) {
-      router.push("/tests/assessment");
-    }
-  }, [router]);
+  }, []);
 
   const handleNewUser = () => {
     router.push("/auth/register");
