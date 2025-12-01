@@ -20,6 +20,7 @@ This file contains:
 4. Attention task metadata generator
 5. Scoring functions for accuracy, speed, and attention metrics
 6. FastAPI endpoints: /generate_polygon, /generate_partial, /generate_attention, /grade
+7. Level 5-7 endpoints for shape recognition, intersection, and reconstruction
 
 Note: This code is written to be clear and readable; some parameters (vertex counts,
 random seeds, thresholds) should be tuned empirically.
@@ -32,8 +33,41 @@ from scipy.spatial import Delaunay
 from shapely.geometry import Polygon, Point, LineString
 import math
 import random
+import os
+
+# Import new modules
+from geometry_utils import (
+    compute_polygon_intersection,
+    compute_hausdorff_distance,
+    compute_shape_similarity,
+    compute_vertex_order_similarity,
+    translate_polygon
+)
+from pointcloud_manager import initialize_point_cloud_manager, get_point_cloud_manager
+from scoring import (
+    score_level_5_recognition,
+    score_level_6_intersection,
+    score_level_7_reconstruction,
+    compute_composite_score
+)
 
 app = FastAPI(title="CogniTest Backend")
+
+# Initialize point-cloud manager at startup
+POINTCLOUD_DIR = os.path.join(
+    os.path.dirname(__file__),
+    "Point approximator",
+    "Processed_Images"
+)
+
+@app.on_event("startup")
+def startup_event():
+    """Initialize point-cloud manager on server startup."""
+    try:
+        initialize_point_cloud_manager(POINTCLOUD_DIR)
+        print("Point-cloud manager initialized successfully")
+    except Exception as e:
+        print(f"Warning: Failed to initialize point-cloud manager: {e}")
 
 # -----------------------------
 # Pydantic models (schemas)
@@ -366,6 +400,356 @@ def grade(req: GradeRequest):
         'misclicks': misclicks
     }
     return GradeResponse(accuracy_score=acc, time_score=time_sc, attention_score=att, composite_score=composite_norm, details=details)
+
+
+# =====================================================
+# LEVEL 5: SHAPE RECOGNITION ENDPOINTS
+# =====================================================
+
+class Level5Shape(BaseModel):
+    name: str
+    label: str
+    points: List[Dict[str, float]]
+    is_target: bool
+
+class Level5GenerateRequest(BaseModel):
+    level: int = Field(5, ge=5, le=5)
+    sublevel: int = Field(..., ge=1, le=5)
+    seed: Optional[int] = None
+
+class Level5GenerateResponse(BaseModel):
+    shapes: List[Level5Shape]
+    target_index: int
+    target_name: str
+    point_density: float
+    time_limit_seconds: int
+
+class Level5GradeRequest(BaseModel):
+    target_index: int
+    selected_index: int
+    reaction_time_ms: int
+    confidence_rating: int = Field(..., ge=1, le=5)
+    time_limit_ms: int = 60000
+
+class Level5GradeResponse(BaseModel):
+    correctness: float
+    time_score: float
+    confidence_score: float
+    recognition_score: float
+    correct: bool
+
+@app.post('/generate_level_5', response_model=Level5GenerateResponse)
+def generate_level_5(req: Level5GenerateRequest):
+    """Generate shape recognition task for Level 5."""
+    try:
+        manager = get_point_cloud_manager()
+        
+        # Get difficulty parameters
+        params = manager.get_difficulty_params(req.level, req.sublevel)
+        
+        # Generate recognition task
+        task = manager.generate_recognition_task(
+            num_distractors=params['num_distractors'],
+            point_density=params['point_density'],
+            seed=req.seed
+        )
+        
+        # Convert to response format
+        shapes = [
+            Level5Shape(
+                name=s['name'],
+                label=s['label'],
+                points=s['points'],
+                is_target=s['is_target']
+            )
+            for s in task['shapes']
+        ]
+        
+        return Level5GenerateResponse(
+            shapes=shapes,
+            target_index=task['target_index'],
+            target_name=task['target_name'],
+            point_density=task['point_density'],
+            time_limit_seconds=params['time_limit_seconds']
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate Level 5: {str(e)}")
+
+
+@app.post('/grade_level_5', response_model=Level5GradeResponse)
+def grade_level_5(req: Level5GradeRequest):
+    """Grade Level 5 shape recognition submission."""
+    correct = req.selected_index == req.target_index
+    
+    scores = score_level_5_recognition(
+        correct=correct,
+        reaction_time_ms=req.reaction_time_ms,
+        confidence_rating=req.confidence_rating,
+        time_limit_ms=req.time_limit_ms
+    )
+    
+    return Level5GradeResponse(
+        correctness=scores['correctness'],
+        time_score=scores['time_score'],
+        confidence_score=scores['confidence_score'],
+        recognition_score=scores['recognition_score'],
+        correct=correct
+    )
+
+
+# =====================================================
+# LEVEL 6: POLYGON INTERSECTION ENDPOINTS
+# =====================================================
+
+class PolygonData(BaseModel):
+    points: List[Dict[str, float]]
+    velocity: Dict[str, float]  # {dx, dy} per frame
+
+class Level6GenerateRequest(BaseModel):
+    level: int = Field(6, ge=6, le=6)
+    sublevel: int = Field(..., ge=1, le=5)
+    seed: Optional[int] = None
+
+class Level6GenerateResponse(BaseModel):
+    polygon_a: PolygonData
+    polygon_b: PolygonData
+    threshold_percentage: float
+    animation_duration_ms: int
+    speed_multiplier: float
+
+class IntersectionComputeRequest(BaseModel):
+    polygon_a: List[Dict[str, float]]
+    polygon_b: List[Dict[str, float]]
+
+class IntersectionComputeResponse(BaseModel):
+    intersection_area: float
+    polygon_a_area: float
+    polygon_b_area: float
+    intersection_percentage: float
+    intersection_polygon: Optional[List[Dict[str, float]]] = None
+
+class Level6GradeRequest(BaseModel):
+    detection_time_ms: int
+    actual_intersection_time_ms: int
+    threshold_percentage: float
+    estimated_area: Optional[float] = None
+    actual_area: Optional[float] = None
+
+class Level6GradeResponse(BaseModel):
+    timing_accuracy: float
+    detection_score: float
+    area_accuracy: Optional[float] = None
+
+@app.post('/generate_level_6', response_model=Level6GenerateResponse)
+def generate_level_6(req: Level6GenerateRequest):
+    """Generate polygon intersection task for Level 6."""
+    seed = req.seed if req.seed is not None else random.randint(0, 2**30)
+    
+    # Difficulty parameters
+    difficulty_map = {
+        1: {'vertices': 6, 'speed': 0.0005, 'threshold': 20.0, 'duration': 10000},
+        2: {'vertices': 8, 'speed': 0.0008, 'threshold': 18.0, 'duration': 9000},
+        3: {'vertices': 8, 'speed': 0.001, 'threshold': 15.0, 'duration': 8000},
+        4: {'vertices': 10, 'speed': 0.0013, 'threshold': 12.0, 'duration': 7000},
+        5: {'vertices': 10, 'speed': 0.0015, 'threshold': 10.0, 'duration': 6000}
+    }
+    
+    params = difficulty_map.get(req.sublevel, difficulty_map[3])
+    
+    # Generate two polygons using existing polygon generator
+    base_req = GenerateRequest(level=req.level, sublevel=req.sublevel, 
+                               vertex_count=params['vertices'], seed=seed)
+    poly_a_data = generate_polygon(base_req)
+    
+    # Generate second polygon with different seed
+    base_req2 = GenerateRequest(level=req.level, sublevel=req.sublevel,
+                                vertex_count=params['vertices'], seed=seed + 1000)
+    poly_b_data = generate_polygon(base_req2)
+    
+    # Convert to coordinate format
+    poly_a_points = [{'x': p.x, 'y': p.y} for p in poly_a_data.points]
+    poly_b_points = [{'x': p.x, 'y': p.y} for p in poly_b_data.points]
+    
+    # Offset polygon B to start separated
+    poly_b_points = translate_polygon(poly_b_points, 0.5, 0.3)
+    
+    # Define movement vectors (polygons will move toward each other)
+    velocity_a = {'dx': params['speed'], 'dy': params['speed'] * 0.5}
+    velocity_b = {'dx': -params['speed'], 'dy': -params['speed'] * 0.5}
+    
+    return Level6GenerateResponse(
+        polygon_a=PolygonData(points=poly_a_points, velocity=velocity_a),
+        polygon_b=PolygonData(points=poly_b_points, velocity=velocity_b),
+        threshold_percentage=params['threshold'],
+        animation_duration_ms=params['duration'],
+        speed_multiplier=params['speed']
+    )
+
+
+@app.post('/compute_intersection', response_model=IntersectionComputeResponse)
+def compute_intersection(req: IntersectionComputeRequest):
+    """Compute intersection between two polygons."""
+    result = compute_polygon_intersection(req.polygon_a, req.polygon_b)
+    
+    return IntersectionComputeResponse(
+        intersection_area=result['intersection_area'],
+        polygon_a_area=result['polygon_a_area'],
+        polygon_b_area=result['polygon_b_area'],
+        intersection_percentage=result['intersection_percentage'],
+        intersection_polygon=result.get('intersection_polygon')
+    )
+
+
+@app.post('/grade_level_6', response_model=Level6GradeResponse)
+def grade_level_6(req: Level6GradeRequest):
+    """Grade Level 6 intersection detection submission."""
+    scores = score_level_6_intersection(
+        detection_time_ms=req.detection_time_ms,
+        actual_intersection_time_ms=req.actual_intersection_time_ms,
+        threshold_percentage=req.threshold_percentage,
+        estimated_area=req.estimated_area,
+        actual_area=req.actual_area
+    )
+    
+    response = Level6GradeResponse(
+        timing_accuracy=scores['timing_accuracy'],
+        detection_score=scores['detection_score']
+    )
+    
+    if 'area_accuracy' in scores:
+        response.area_accuracy = scores['area_accuracy']
+    
+    return response
+
+
+# =====================================================
+# LEVEL 7: MEMORY RECONSTRUCTION ENDPOINTS
+# =====================================================
+
+class Level7GenerateRequest(BaseModel):
+    level: int = Field(7, ge=7, le=7)
+    sublevel: int = Field(..., ge=1, le=5)
+    seed: Optional[int] = None
+
+class Level7GenerateResponse(BaseModel):
+    target_polygon: List[Dict[str, float]]
+    display_time_ms: int
+    expected_vertices: int
+
+class Level7GradeRequest(BaseModel):
+    target_polygon: List[Dict[str, float]]
+    user_polygon: List[Dict[str, float]]
+    time_taken_ms: int
+
+class Level7GradeResponse(BaseModel):
+    hausdorff_distance: float
+    shape_similarity: float
+    vertex_order_similarity: float
+    shape_score: float
+    order_score: float
+    vertex_count_score: float
+    time_score: float
+    reconstruction_score: float
+
+@app.post('/generate_level_7', response_model=Level7GenerateResponse)
+def generate_level_7(req: Level7GenerateRequest):
+    """Generate memory reconstruction task for Level 7."""
+    # Difficulty parameters
+    difficulty_map = {
+        1: {'vertices': 6, 'display_time': 5000},
+        2: {'vertices': 7, 'display_time': 4000},
+        3: {'vertices': 8, 'display_time': 3500},
+        4: {'vertices': 10, 'display_time': 3000},
+        5: {'vertices': 12, 'display_time': 3000}
+    }
+    
+    params = difficulty_map.get(req.sublevel, difficulty_map[3])
+    
+    # Generate polygon
+    base_req = GenerateRequest(level=req.level, sublevel=req.sublevel,
+                               vertex_count=params['vertices'], seed=req.seed)
+    poly_data = generate_polygon(base_req)
+    
+    # Convert to coordinate format
+    target_points = [{'x': p.x, 'y': p.y} for p in poly_data.points]
+    
+    return Level7GenerateResponse(
+        target_polygon=target_points,
+        display_time_ms=params['display_time'],
+        expected_vertices=len(target_points)
+    )
+
+
+@app.post('/grade_level_7', response_model=Level7GradeResponse)
+def grade_level_7(req: Level7GradeRequest):
+    """Grade Level 7 memory reconstruction submission."""
+    # Compute Hausdorff distance
+    hausdorff = compute_hausdorff_distance(req.user_polygon, req.target_polygon)
+    
+    # Compute shape similarity
+    shape_sim = compute_shape_similarity(req.user_polygon, req.target_polygon)
+    
+    # Compute vertex order similarity (if same length)
+    if len(req.user_polygon) == len(req.target_polygon):
+        # Create index sequences (0, 1, 2, ...)
+        user_order = list(range(len(req.user_polygon)))
+        target_order = list(range(len(req.target_polygon)))
+        vertex_order_sim = compute_vertex_order_similarity(user_order, target_order)
+    else:
+        vertex_order_sim = 0.0
+    
+    # Compute scores
+    scores = score_level_7_reconstruction(
+        hausdorff_distance=hausdorff,
+        vertex_order_similarity=vertex_order_sim,
+        shape_similarity=shape_sim,
+        time_taken_ms=req.time_taken_ms,
+        expected_vertices=len(req.target_polygon),
+        actual_vertices=len(req.user_polygon)
+    )
+    
+    return Level7GradeResponse(
+        hausdorff_distance=hausdorff,
+        shape_similarity=shape_sim,
+        vertex_order_similarity=vertex_order_sim,
+        shape_score=scores['shape_score'],
+        order_score=scores['order_score'],
+        vertex_count_score=scores['vertex_count_score'],
+        time_score=scores['time_score'],
+        reconstruction_score=scores['reconstruction_score']
+    )
+
+
+# =====================================================
+# COMPOSITE SCORING ENDPOINT
+# =====================================================
+
+class CompositeScoreRequest(BaseModel):
+    all_level_results: List[Dict[str, Any]]
+
+class CognitiveProfile(BaseModel):
+    memory: float
+    attention: float
+    visuospatial: float
+    recognition: float
+
+class CompositeScoreResponse(BaseModel):
+    composite_score: float
+    cognitive_profile: CognitiveProfile
+    domain_breakdown: Dict[str, Any]
+
+@app.post('/compute_composite_score', response_model=CompositeScoreResponse)
+def compute_composite_score_endpoint(req: CompositeScoreRequest):
+    """Compute overall composite score and cognitive profile."""
+    result = compute_composite_score(req.all_level_results)
+    
+    return CompositeScoreResponse(
+        composite_score=result['composite_score'],
+        cognitive_profile=CognitiveProfile(**result['cognitive_profile']),
+        domain_breakdown=result['domain_breakdown']
+    )
+
 
 from fastapi.middleware.cors import CORSMiddleware
 

@@ -26,14 +26,23 @@ export function useAssessment() {
 
         let data;
         if (type === "basic") {
+            // Basic test: complexity increases with sublevel
             data = await generatePolygon(level, sublevel);
         } else if (type === "memory") {
-            // For memory test, show 75% of labels initially
-            data = await generatePartial(level, sublevel, 0.75);
+            // Memory test: progressive difficulty across sublevels
+            // Sublevel 1: 95% labels visible (easiest)
+            // Sublevel 2: 85% visible
+            // Sublevel 3: 75% visible
+            // Sublevel 4: 65% visible
+            // Sublevel 5: 55% visible (hardest)
+            const labelCoverage = Math.max(0.55, 1.05 - (sublevel * 0.1));
+            data = await generatePartial(level, sublevel, labelCoverage);
             
-            // Select random 30% of points to flash
+            // Flash more points as sublevel increases
+            // Sublevel 1: 20% flash, Sublevel 5: 40% flash
             if (data.points && data.points.length > 0) {
-                const numToFlash = Math.max(1, Math.floor(data.points.length * 0.3));
+                const flashPercentage = 0.20 + (sublevel - 1) * 0.05; // 20% to 40%
+                const numToFlash = Math.max(1, Math.floor(data.points.length * flashPercentage));
                 const indices = data.points.map((_: any, i: number) => i);
                 const shuffled = indices.sort(() => Math.random() - 0.5);
                 const selectedIndices = shuffled.slice(0, numToFlash);
@@ -51,25 +60,33 @@ export function useAssessment() {
                 data.highlight_schedule = schedule;
             }
         } else if (type === "attention") {
-            // For attention test, add drift and highlights
-            data = await generateAttention(level, sublevel, 0.01, 0.5, 0.15);
+            // Attention test: more drift as sublevel increases
+            // Sublevel 1: 0.02 amplitude, Sublevel 5: 0.06 amplitude
+            const driftAmplitude = 0.02 + (sublevel - 1) * 0.01;
+            const driftFrequency = 0.4 + (sublevel - 1) * 0.05; // Faster drift at higher sublevels
             
-            // Override to select only 1-2 random points to drift
+            data = await generateAttention(level, sublevel, driftAmplitude, driftFrequency, 0.15);
+            
+            // More points drift as sublevel increases
+            // Sublevel 1-2: 1 point, Sublevel 3: 2 points, Sublevel 4-5: 3 points
             if (data.points && data.points.length > 0) {
-                const numToDrift = Math.random() > 0.5 ? 2 : 1;
+                let numToDrift = 1;
+                if (sublevel >= 4) numToDrift = 3;
+                else if (sublevel >= 3) numToDrift = 2;
+                
                 const indices = data.points.map((_: any, i: number) => i);
                 const shuffled = indices.sort(() => Math.random() - 0.5);
                 const driftingIndices = shuffled.slice(0, numToDrift);
                 
-                // Store which points should drift
+                // Store which points should drift with progressive amplitude
                 data.driftParameters = {
-                    amplitude: 0.01,
-                    frequency: 0.5,
-                    driftingIndices // Only these indices will drift
+                    amplitude: driftAmplitude,
+                    frequency: driftFrequency,
+                    driftingIndices // Progressive number of drifting points
                 };
                 
-                // Create random highlight schedule for 1-2 points
-                const numToHighlight = Math.random() > 0.5 ? 2 : 1;
+                // Create random highlight schedule
+                const numToHighlight = sublevel <= 2 ? 1 : 2; // More highlights at higher sublevels
                 const highlightIndices = shuffled.slice(numToDrift, numToDrift + numToHighlight);
                 const schedule: any[] = [];
                 highlightIndices.forEach((idx: number, scheduleIdx: number) => {
@@ -87,7 +104,7 @@ export function useAssessment() {
 
         setPoints(data.points);
         setTrueOrder(data.true_order);
-        setDriftParameters(data.drift_parameters || null);
+        setDriftParameters(data.driftParameters || data.drift_parameters || null);
         setHighlightSchedule(data.highlight_schedule || []);
         setStartTime(Date.now());
         setSubmissions([]);

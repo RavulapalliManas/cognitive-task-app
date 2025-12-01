@@ -1,26 +1,30 @@
 "use client";
 
-import React, { useEffect, useRef, useState, useCallback } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import React, { useEffect, useState } from "react";
 
 type PointType = {
-    x: number;
-    y: number;
+    x: number; // 0..1 normalized
+    y: number; // 0..1 normalized
     label?: string | null;
     index: number;
 };
+
+interface DriftParameters {
+    amplitude: number;
+    frequency: number;
+    driftingIndices?: number[];
+}
 
 interface AssessmentCanvasProps {
     points: PointType[];
     onClickPoint: (pointIndex: number) => void;
     testType: "basic" | "memory" | "attention";
-    driftParameters?: any;
-    highlightSchedule?: any[];
+    driftParameters?: DriftParameters;
+    highlightSchedule?: Array<{ index: number; start_ms: number; duration_ms: number }>;
     startTime: number | null;
-    submissions: any[];
+    submissions: Array<{ selected_index: number; timestamp: number }>;
     trueOrder: number[];
     mistakes: number;
-    onNextCountdown?: (show: boolean) => void;
 }
 
 export default function AssessmentCanvas({ 
@@ -32,22 +36,20 @@ export default function AssessmentCanvas({
     startTime,
     submissions,
     trueOrder,
-    mistakes,
-    onNextCountdown
 }: AssessmentCanvasProps) {
-    const canvasRef = useRef<HTMLCanvasElement>(null);
-    const animationFrameRef = useRef<number | undefined>(undefined);
     const [hoveredPoint, setHoveredPoint] = useState<number | null>(null);
     const [clickedPoints, setClickedPoints] = useState<Set<number>>(new Set());
     const [wrongClick, setWrongClick] = useState<number | null>(null);
     const [flashingPoints, setFlashingPoints] = useState<Set<number>>(new Set());
-    const [nextFlashTime, setNextFlashTime] = useState<number | null>(null);
+    const [driftOffsets, setDriftOffsets] = useState<Map<number, { x: number; y: number }>>(new Map());
     
-    const CANVAS_WIDTH = 1200;
-    const CANVAS_HEIGHT = 800;
-    const POINT_RADIUS = 18;
-    const HOVER_RADIUS = 24;
-    const PADDING = 60; // Padding to keep points away from canvas edges
+    // Visual constants - increased sizes for better visibility
+    const SVG_WIDTH = 1000;
+    const SVG_HEIGHT = 600;
+    const POINT_RADIUS = 28; // Increased from 18
+    const HOVER_RADIUS = 36; // Increased from 24
+    const LINE_WIDTH = 5; // Increased from 3
+    const CLOSING_LINE_WIDTH = 7; // Increased from 4
 
     // Track clicked points
     useEffect(() => {
@@ -55,13 +57,12 @@ export default function AssessmentCanvas({
         setClickedPoints(clicked);
     }, [submissions]);
 
-    // Handle flashing for memory test
+    // Flash schedule for Level 2 (Memory Test)
     useEffect(() => {
         if (testType === "memory" && highlightSchedule.length > 0 && startTime) {
             const checkFlashes = () => {
                 const elapsed = Date.now() - startTime;
                 const newFlashing = new Set<number>();
-                let nextFlash: number | null = null;
 
                 highlightSchedule.forEach(event => {
                     const eventStart = event.start_ms;
@@ -69,350 +70,213 @@ export default function AssessmentCanvas({
 
                     if (elapsed >= eventStart && elapsed <= eventEnd) {
                         newFlashing.add(event.index);
-                    } else if (eventStart > elapsed) {
-                        if (nextFlash === null || eventStart < nextFlash) {
-                            nextFlash = eventStart;
-                        }
                     }
                 });
 
                 setFlashingPoints(newFlashing);
-                
-                // Show countdown if next flash is within 20 seconds
-                if (nextFlash !== null) {
-                    const secondsUntilNext = Math.floor((nextFlash - elapsed) / 1000);
-                    if (secondsUntilNext <= 20 && secondsUntilNext > 0) {
-                        onNextCountdown?.(true);
-                    } else {
-                        onNextCountdown?.(false);
-                    }
-                    setNextFlashTime(nextFlash);
-                } else {
-                    onNextCountdown?.(false);
-                    setNextFlashTime(null);
-                }
             };
 
-            const interval = setInterval(checkFlashes, 50); // Check at 20fps for smooth flash detection
+            const interval = setInterval(checkFlashes, 100);
             return () => clearInterval(interval);
         }
-    }, [testType, highlightSchedule, startTime, onNextCountdown]);
+    }, [testType, highlightSchedule, startTime]);
 
-    // Calculate drift offset for attention test
-    const getDriftOffset = useCallback((pointIndex: number, baseX: number, baseY: number, currentTime: number): [number, number] => {
-        if (testType !== "attention" || !driftParameters || !startTime) {
-            return [0, 0];
-        }
-
-        // Check if this specific point should drift
-        const driftingIndices = driftParameters.driftingIndices || [];
-        if (!driftingIndices.includes(pointIndex)) {
-            return [0, 0];
-        }
-
-        const elapsed = (currentTime - startTime) / 1000; // Convert to seconds
-        const { amplitude, frequency } = driftParameters;
-        
-        // Use sine waves with different phases for x and y to create circular drift
-        const offsetX = Math.sin(elapsed * frequency * Math.PI * 2) * amplitude * CANVAS_WIDTH;
-        const offsetY = Math.cos(elapsed * frequency * Math.PI * 2 * 1.3) * amplitude * CANVAS_HEIGHT;
-        
-        return [offsetX, offsetY];
-    }, [testType, driftParameters, startTime, CANVAS_WIDTH, CANVAS_HEIGHT]);
-
-    // High-performance rendering loop
+    // Drift animation for Level 3 (Attention Test)
     useEffect(() => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
+        if (testType === "attention" && startTime && driftParameters?.driftingIndices) {
+            const animate = () => {
+                const elapsed = (Date.now() - startTime) / 1000; // seconds
+                const newOffsets = new Map<number, { x: number; y: number }>();
 
-        const ctx = canvas.getContext("2d", { alpha: false });
-        if (!ctx) return;
+                driftParameters.driftingIndices!.forEach(idx => {
+                    const angle = elapsed * driftParameters.frequency * 2 * Math.PI;
+                    const offsetX = Math.cos(angle) * driftParameters.amplitude * SVG_WIDTH;
+                    const offsetY = Math.sin(angle) * driftParameters.amplitude * SVG_HEIGHT;
+                    newOffsets.set(idx, { x: offsetX, y: offsetY });
+                });
 
-        // Enable hardware acceleration hints
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = "high";
+                setDriftOffsets(newOffsets);
+                requestAnimationFrame(animate);
+            };
 
-        const render = (timestamp: number) => {
-            // Clear canvas with background
-            ctx.fillStyle = "#ffffff";
-            ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+            const animationId = requestAnimationFrame(animate);
+            return () => cancelAnimationFrame(animationId);
+        }
+    }, [testType, startTime, driftParameters]);
 
-            // Draw connection lines for completed sequence
-            if (submissions.length > 1) {
-                ctx.strokeStyle = "rgba(59, 130, 246, 0.5)";
-                ctx.lineWidth = 3;
-                ctx.beginPath();
-                
-                for (let i = 0; i < submissions.length - 1; i++) {
-                    const fromIndex = submissions[i].selected_index;
-                    const toIndex = submissions[i + 1].selected_index;
-                    const fromPoint = points.find(p => p.index === fromIndex);
-                    const toPoint = points.find(p => p.index === toIndex);
-                    
-                    if (fromPoint && toPoint) {
-                        const [fromDriftX, fromDriftY] = getDriftOffset(fromIndex, fromPoint.x, fromPoint.y, timestamp);
-                        const [toDriftX, toDriftY] = getDriftOffset(toIndex, toPoint.x, toPoint.y, timestamp);
-                        
-                        const fromX = PADDING + fromPoint.x * (CANVAS_WIDTH - 2 * PADDING) + fromDriftX;
-                        const fromY = PADDING + fromPoint.y * (CANVAS_HEIGHT - 2 * PADDING) + fromDriftY;
-                        const toX = PADDING + toPoint.x * (CANVAS_WIDTH - 2 * PADDING) + toDriftX;
-                        const toY = PADDING + toPoint.y * (CANVAS_HEIGHT - 2 * PADDING) + toDriftY;
-                        
-                        if (i === 0) {
-                            ctx.moveTo(fromX, fromY);
-                        }
-                        ctx.lineTo(toX, toY);
-                    }
-                }
-                
-                // Close the polygon if all points are clicked
-                if (submissions.length === trueOrder.length) {
-                    const lastIndex = submissions[submissions.length - 1].selected_index;
-                    const firstIndex = submissions[0].selected_index;
-                    const lastPoint = points.find(p => p.index === lastIndex);
-                    const firstPoint = points.find(p => p.index === firstIndex);
-                    
-                    if (lastPoint && firstPoint) {
-                        const [lastDriftX, lastDriftY] = getDriftOffset(lastIndex, lastPoint.x, lastPoint.y, timestamp);
-                        const [firstDriftX, firstDriftY] = getDriftOffset(firstIndex, firstPoint.x, firstPoint.y, timestamp);
-                        
-                        const lastX = PADDING + lastPoint.x * (CANVAS_WIDTH - 2 * PADDING) + lastDriftX;
-                        const lastY = PADDING + lastPoint.y * (CANVAS_HEIGHT - 2 * PADDING) + lastDriftY;
-                        const firstX = PADDING + firstPoint.x * (CANVAS_WIDTH - 2 * PADDING) + firstDriftX;
-                        const firstY = PADDING + firstPoint.y * (CANVAS_HEIGHT - 2 * PADDING) + firstDriftY;
-                        
-                        ctx.lineTo(firstX, firstY);
-                        ctx.strokeStyle = "rgba(34, 197, 94, 0.7)"; // Green for closing line
-                        ctx.lineWidth = 4;
-                    }
-                }
-                
-                ctx.stroke();
-            }
+    // Handle point click with wrong-click flash
+    const handlePointClick = (pointIndex: number) => {
+        const nextExpected = trueOrder[submissions.length];
+        
+        if (pointIndex === nextExpected) {
+            onClickPoint(pointIndex);
+        } else {
+            // Wrong click - flash red
+            setWrongClick(pointIndex);
+            setTimeout(() => setWrongClick(null), 300);
+            onClickPoint(pointIndex); // Still register to increment mistakes
+        }
+    };
 
-            // Draw points
-            points.forEach((point, idx) => {
-                const [driftX, driftY] = getDriftOffset(point.index, point.x, point.y, timestamp);
-                // Add padding to keep points within canvas bounds
-                const x = PADDING + point.x * (CANVAS_WIDTH - 2 * PADDING) + driftX;
-                const y = PADDING + point.y * (CANVAS_HEIGHT - 2 * PADDING) + driftY;
-                
-                const isClicked = clickedPoints.has(point.index);
-                const isHovered = hoveredPoint === point.index;
-                const isFlashing = flashingPoints.has(point.index);
-                const isWrong = wrongClick === point.index;
-                const isNext = !isClicked && submissions.length < trueOrder.length && 
-                trueOrder[submissions.length] === point.index;
-
-                // Determine radius and colors
-                let radius = POINT_RADIUS;
-                let fillColor = "#ffffff";
-                let strokeColor = "#1f2937";
-                let strokeWidth = 2;
-
-                if (isWrong) {
-                    // Wrong click - flash red
-                    radius = HOVER_RADIUS;
-                    fillColor = "#ef4444";
-                    strokeColor = "#dc2626";
-                    strokeWidth = 4;
-                } else if (isFlashing) {
-                    // Memory flash - bright yellow/gold pulsing
-                    const flashIntensity = Math.sin(timestamp * 0.015) * 0.3 + 0.7;
-                    radius = POINT_RADIUS + 4 * flashIntensity;
-                    fillColor = `rgba(250, 204, 21, ${flashIntensity})`;
-                    strokeColor = "#f59e0b";
-                    strokeWidth = 4;
-                    
-                    // Add glow effect
-                    ctx.shadowBlur = 20 * flashIntensity;
-                    ctx.shadowColor = "#fbbf24";
-                } else if (isClicked) {
-                    // Already clicked - green
-                    fillColor = "#10b981";
-                    strokeColor = "#059669";
-                    strokeWidth = 3;
-                } else if (isNext) {
-                    // Next expected point - pulse blue
-                    const pulse = Math.sin(timestamp * 0.01) * 0.2 + 0.8;
-                    radius = POINT_RADIUS + 2 * pulse;
-                    fillColor = "#3b82f6";
-                    strokeColor = "#2563eb";
-                    strokeWidth = 3;
-                    ctx.shadowBlur = 10;
-                    ctx.shadowColor = "#3b82f6";
-                } else if (isHovered) {
-                    radius = HOVER_RADIUS;
-                    fillColor = "#e0e7ff";
-                    strokeColor = "#4f46e5";
-                    strokeWidth = 3;
-                }
-
-                // Draw point circle
-                ctx.beginPath();
-                ctx.arc(x, y, radius, 0, Math.PI * 2);
-                ctx.fillStyle = fillColor;
-                ctx.fill();
-                ctx.strokeStyle = strokeColor;
-                ctx.lineWidth = strokeWidth;
-                ctx.stroke();
-                
-                // Reset shadow
-                ctx.shadowBlur = 0;
-
-                // Draw label if exists and not hidden
-                if (point.label) {
-                    ctx.font = "bold 24px system-ui";
-                    ctx.textAlign = "center";
-                    ctx.textBaseline = "middle";
-                    ctx.fillStyle = isClicked ? "#ffffff" : "#1f2937";
-                    ctx.fillText(point.label, x, y);
-                } else if (testType === "memory" && !isClicked) {
-                    // Show question mark for hidden labels
-                    ctx.font = "bold 22px system-ui";
-                    ctx.textAlign = "center";
-                    ctx.textBaseline = "middle";
-                    ctx.fillStyle = "#9ca3af";
-                    ctx.fillText("?", x, y);
-                }
-
-                // Draw sequence number for clicked points
-                if (isClicked) {
-                    const sequenceNum = submissions.findIndex(s => s.selected_index === point.index) + 1;
-                    ctx.font = "bold 16px system-ui";
-                    ctx.fillStyle = "#ffffff";
-                    ctx.beginPath();
-                    ctx.arc(x + radius - 2, y - radius + 2, 14, 0, Math.PI * 2);
-                    ctx.fillStyle = "#1f2937";
-                    ctx.fill();
-                    ctx.fillStyle = "#ffffff";
-                    ctx.textAlign = "center";
-                    ctx.textBaseline = "middle";
-                    ctx.fillText(sequenceNum.toString(), x + radius - 2, y - radius + 2);
-                }
-            });
-
-            // Continue animation loop
-            animationFrameRef.current = requestAnimationFrame(render);
+    // Convert normalized coordinates to SVG coordinates with drift
+    const toSVGCoords = (point: PointType): { x: number; y: number } => {
+        const drift = driftOffsets.get(point.index) || { x: 0, y: 0 };
+        return {
+            x: point.x * SVG_WIDTH + drift.x,
+            y: point.y * SVG_HEIGHT + drift.y,
         };
+    };
 
-        animationFrameRef.current = requestAnimationFrame(render);
+    // Generate path for connection lines
+    const generateConnectionPath = (): string => {
+        if (submissions.length === 0) return "";
 
-        return () => {
-            if (animationFrameRef.current) {
-                cancelAnimationFrame(animationFrameRef.current);
-            }
-        };
-    }, [points, hoveredPoint, clickedPoints, flashingPoints, wrongClick, submissions, trueOrder, testType, getDriftOffset]);
+        const pathParts: string[] = [];
+        
+        for (let i = 0; i < submissions.length; i++) {
+            const pointIndex = submissions[i].selected_index;
+            const point = points.find(p => p.index === pointIndex);
+            if (!point) continue;
 
-    // Handle mouse move for hover effects
-    const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-
-        const rect = canvas.getBoundingClientRect();
-        const mouseX = ((e.clientX - rect.left) / rect.width) * CANVAS_WIDTH;
-        const mouseY = ((e.clientY - rect.top) / rect.height) * CANVAS_HEIGHT;
-
-        let found: number | null = null;
-        const currentTime = performance.now();
-
-        for (const point of points) {
-            const [driftX, driftY] = getDriftOffset(point.index, point.x, point.y, currentTime);
-            const px = PADDING + point.x * (CANVAS_WIDTH - 2 * PADDING) + driftX;
-            const py = PADDING + point.y * (CANVAS_HEIGHT - 2 * PADDING) + driftY;
-            const dist = Math.sqrt((mouseX - px) ** 2 + (mouseY - py) ** 2);
-
-            if (dist <= HOVER_RADIUS) {
-                found = point.index;
-                break;
+            const coords = toSVGCoords(point);
+            if (i === 0) {
+                pathParts.push(`M ${coords.x} ${coords.y}`);
+            } else {
+                pathParts.push(`L ${coords.x} ${coords.y}`);
             }
         }
 
-        setHoveredPoint(found);
-    }, [points, getDriftOffset]);
+        return pathParts.join(" ");
+    };
 
-    // Handle click
-    const handleClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
+    // Generate closing line path (last to first)
+    const generateClosingPath = (): string | null => {
+        if (submissions.length !== trueOrder.length || submissions.length === 0) return null;
 
-        const rect = canvas.getBoundingClientRect();
-        const mouseX = ((e.clientX - rect.left) / rect.width) * CANVAS_WIDTH;
-        const mouseY = ((e.clientY - rect.top) / rect.height) * CANVAS_HEIGHT;
+        const lastIndex = submissions[submissions.length - 1].selected_index;
+        const firstIndex = submissions[0].selected_index;
+        const lastPoint = points.find(p => p.index === lastIndex);
+        const firstPoint = points.find(p => p.index === firstIndex);
 
-        const currentTime = performance.now();
+        if (!lastPoint || !firstPoint) return null;
 
-        for (const point of points) {
-            const [driftX, driftY] = getDriftOffset(point.index, point.x, point.y, currentTime);
-            const px = PADDING + point.x * (CANVAS_WIDTH - 2 * PADDING) + driftX;
-            const py = PADDING + point.y * (CANVAS_HEIGHT - 2 * PADDING) + driftY;
-            const dist = Math.sqrt((mouseX - px) ** 2 + (mouseY - py) ** 2);
+        const lastCoords = toSVGCoords(lastPoint);
+        const firstCoords = toSVGCoords(firstPoint);
 
-            if (dist <= HOVER_RADIUS) {
-                // Check if this is the correct next point
-                const expectedIndex = trueOrder[submissions.length];
-                const isCorrect = point.index === expectedIndex;
+        return `M ${lastCoords.x} ${lastCoords.y} L ${firstCoords.x} ${firstCoords.y}`;
+    };
 
-                if (!isCorrect && !clickedPoints.has(point.index)) {
-                    // Show error feedback
-                    setWrongClick(point.index);
-                    setTimeout(() => setWrongClick(null), 500);
-                }
-
-                onClickPoint(point.index);
-                break;
-            }
-        }
-    }, [points, onClickPoint, getDriftOffset, trueOrder, submissions, clickedPoints]);
+    const closingPath = generateClosingPath();
 
     return (
-        <div className="flex flex-col items-center gap-6">
-            <div className="relative">
-                <canvas
-                    ref={canvasRef}
-                    width={CANVAS_WIDTH}
-                    height={CANVAS_HEIGHT}
-                    onMouseMove={handleMouseMove}
-                    onClick={handleClick}
-                    className="border-4 border-gray-300 dark:border-gray-700 rounded-2xl shadow-2xl cursor-pointer"
-                    style={{
-                        width: "100%",
-                        maxWidth: `${CANVAS_WIDTH}px`,
-                        height: "auto",
-                        imageRendering: "crisp-edges",
-                        willChange: "transform",
-                    }}
+        <div className="w-full flex justify-center items-center bg-gray-50 dark:bg-gray-900 rounded-2xl p-8">
+            <svg
+                width={SVG_WIDTH}
+                height={SVG_HEIGHT}
+                viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`}
+                className="bg-white dark:bg-gray-800 rounded-xl shadow-lg"
+                style={{ maxWidth: "100%", height: "auto" }}
+            >
+                {/* Connection lines */}
+                <path
+                    d={generateConnectionPath()}
+                    stroke="rgba(59, 130, 246, 0.5)"
+                    strokeWidth={LINE_WIDTH}
+                    fill="none"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
                 />
-                
-                {/* Instructions overlay */}
-                <AnimatePresence>
-                    {submissions.length === 0 && (
-                        <motion.div
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            exit={{ opacity: 0 }}
-                            className="absolute top-6 left-1/2 transform -translate-x-1/2 bg-blue-600 text-white px-6 py-3 rounded-full shadow-lg font-bold text-lg z-10"
-                        >
-                            Click the points in sequence to connect them!
-                        </motion.div>
-                    )}
-                </AnimatePresence>
-            </div>
 
-            {/* Test-specific hints */}
-            <div className="text-center text-gray-600 dark:text-gray-400">
-                {testType === "memory" && (
-                    <p className="text-lg">
-                        💡 Watch for <span className="text-yellow-500 font-bold">flashing points</span> to help you remember the sequence!
-                    </p>
+                {/* Closing line (last to first) */}
+                {closingPath && (
+                    <path
+                        d={closingPath}
+                        stroke="rgb(34, 197, 94)"
+                        strokeWidth={CLOSING_LINE_WIDTH}
+                        fill="none"
+                        strokeLinecap="round"
+                    />
                 )}
-                {testType === "attention" && (
-                    <p className="text-lg">
-                        💡 Stay focused! Points will <span className="text-purple-500 font-bold">drift and flash</span> to test your attention.
-                    </p>
-                )}
-            </div>
+
+                {/* Points */}
+                {points.map((point) => {
+                    const coords = toSVGCoords(point);
+                    const isClicked = clickedPoints.has(point.index);
+                    const isHovered = hoveredPoint === point.index;
+                    const isWrong = wrongClick === point.index;
+                    const isFlashing = flashingPoints.has(point.index);
+
+                    const radius = isHovered ? HOVER_RADIUS : POINT_RADIUS;
+                    
+                    let fillColor = "rgba(59, 130, 246, 0.9)"; // Default blue
+                    if (isWrong) fillColor = "rgb(239, 68, 68)"; // Red for wrong click
+                    else if (isFlashing) fillColor = "rgb(234, 179, 8)"; // Yellow for flash
+                    else if (isClicked) fillColor = "rgb(34, 197, 94)"; // Green for clicked
+
+                    return (
+                        <g
+                            key={point.index}
+                            role="button"
+                            aria-label={`Point ${point.label || point.index}`}
+                            onClick={() => handlePointClick(point.index)}
+                            onMouseEnter={() => setHoveredPoint(point.index)}
+                            onMouseLeave={() => setHoveredPoint(null)}
+                            style={{ cursor: "pointer" }}
+                        >
+                            {/* Circle */}
+                            <circle
+                                cx={coords.x}
+                                cy={coords.y}
+                                r={radius}
+                                fill={fillColor}
+                                stroke="white"
+                                strokeWidth={2}
+                                style={{
+                                    transition: "r 0.2s ease, fill 0.3s ease",
+                                }}
+                            />
+
+                            {/* Label */}
+                            {point.label && (
+                                <text
+                                    x={coords.x}
+                                    y={coords.y}
+                                    textAnchor="middle"
+                                    dominantBaseline="central"
+                                    fontSize="28px"
+                                    fontWeight="bold"
+                                    fill={isClicked ? "white" : "#1f2937"}
+                                    pointerEvents="none"
+                                    style={{
+                                        userSelect: "none",
+                                    }}
+                                >
+                                    {point.label}
+                                </text>
+                            )}
+
+                            {/* For memory test, show ? for unlabeled points */}
+                            {testType === "memory" && !point.label && !isClicked && (
+                                <text
+                                    x={coords.x}
+                                    y={coords.y}
+                                    textAnchor="middle"
+                                    dominantBaseline="central"
+                                    fontSize="28px"
+                                    fontWeight="bold"
+                                    fill="#9ca3af"
+                                    pointerEvents="none"
+                                    style={{
+                                        userSelect: "none",
+                                    }}
+                                >
+                                    ?
+                                </text>
+                            )}
+                        </g>
+                    );
+                })}
+            </svg>
         </div>
     );
 }

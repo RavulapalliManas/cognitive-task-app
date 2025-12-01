@@ -7,12 +7,16 @@ import { useAssessment } from "./useassessment";
 import { Button, Card, Progress } from "@heroui/react";
 import { motion, AnimatePresence } from "framer-motion";
 
-type TestPhase = "intro" | "countdown" | "level1" | "level2" | "level3" | "completed";
+type TestPhase = "intro" | "countdown" | "testing" | "completed";
 type LevelTimeData = {
     startTime: number;
     endTime: number | null;
     duration: number;
 };
+
+// Test configuration: 7 levels, 5 sublevels each
+const MAX_LEVELS = 7;
+const SUBLEVELS_PER_LEVEL = 5;
 
 export default function AssessmentPage() {
     const router = useRouter();
@@ -35,16 +39,17 @@ export default function AssessmentPage() {
     const [phase, setPhase] = useState<TestPhase>("intro");
     const [countdown, setCountdown] = useState(3);
     const [showLevelTransition, setShowLevelTransition] = useState(false);
-    const [nextLevelInfo, setNextLevelInfo] = useState<{level: number, type: string} | null>(null);
+    const [showSublevelTransition, setShowSublevelTransition] = useState(false);
+    const [nextLevelInfo, setNextLevelInfo] = useState<{level: number, sublevel: number, type: string} | null>(null);
     const [globalStartTime, setGlobalStartTime] = useState<number | null>(null);
     const [globalElapsedTime, setGlobalElapsedTime] = useState(0);
-    const [levelTimes, setLevelTimes] = useState<Record<number, LevelTimeData>>({});
+    const [levelTimes, setLevelTimes] = useState<Record<string, LevelTimeData>>({});
     const [currentLevelStartTime, setCurrentLevelStartTime] = useState<number | null>(null);
     const [currentLevelElapsedTime, setCurrentLevelElapsedTime] = useState(0);
 
     // Auto-advance when polygon is closed
     useEffect(() => {
-        if (submissions.length === trueOrder.length && trueOrder.length > 0 && phase !== "completed") {
+        if (submissions.length === trueOrder.length && trueOrder.length > 0 && phase === "testing") {
             // Polygon is complete, wait 2 seconds then advance
             const timer = setTimeout(() => {
                 handleNextLevel();
@@ -68,26 +73,22 @@ export default function AssessmentPage() {
             }, 1000);
             return () => clearTimeout(timer);
         } else if (phase === "countdown" && countdown === 0) {
-            // Start appropriate level after countdown
+            // Start appropriate level/sublevel after countdown
             if (!globalStartTime) {
-                // First level
+                // First level, first sublevel
                 setGlobalStartTime(Date.now());
-                startLevel(1, "basic");
+                startLevel(1, 1);
             } else if (nextLevelInfo) {
-                // Next level
-                if (nextLevelInfo.level === 2) {
-                    startLevel(2, "memory");
-                } else if (nextLevelInfo.level === 3) {
-                    startLevel(3, "attention");
-                }
+                // Next level/sublevel
+                startLevel(nextLevelInfo.level, nextLevelInfo.sublevel);
                 setNextLevelInfo(null);
             }
         }
     }, [phase, countdown, globalStartTime, nextLevelInfo]);
 
-    // Global time tracking
+    // Global time tracking (updates every 100ms)
     useEffect(() => {
-        if (globalStartTime && phase !== "completed" && phase !== "intro" && phase !== "countdown") {
+        if (globalStartTime && phase === "testing") {
             const interval = setInterval(() => {
                 setGlobalElapsedTime(Date.now() - globalStartTime);
             }, 100);
@@ -113,19 +114,43 @@ export default function AssessmentPage() {
         return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}.${milliseconds.toString().padStart(2, "0")}`;
     };
 
-    const startLevel = async (level: number, type: "basic" | "memory" | "attention") => {
-        setPhase(`level${level}` as TestPhase);
+    const getTestType = (level: number): "basic" | "memory" | "attention" | "recognition" | "intersection" | "reconstruction" => {
+        if (level === 1) return "basic";
+        if (level === 2) return "memory";
+        if (level === 3) return "attention";
+        if (level === 4) return "attention"; // Combined test uses attention base
+        if (level === 5) return "recognition";
+        if (level === 6) return "intersection";
+        if (level === 7) return "reconstruction";
+        return "basic";
+    };
+
+    const getLevelName = (level: number): string => {
+        if (level === 1) return "Basic Test";
+        if (level === 2) return "Memory Test";
+        if (level === 3) return "Attention Test";
+        if (level === 4) return "Combined Test";
+        if (level === 5) return "Shape Recognition";
+        if (level === 6) return "Intersection Detection";
+        if (level === 7) return "Memory Reconstruction";
+        return "Test";
+    };
+
+    const startLevel = async (level: number, sublevel: number) => {
+        setPhase("testing");
         setCurrentLevelStartTime(Date.now());
-        await start(level, 1, type);
+        const type = getTestType(level);
+        await start(level, sublevel, type);
     };
 
     const handleFinish = async () => {
         // Record final level time
         if (currentLevelStartTime) {
             const endTime = Date.now();
+            const key = `${currentLevel}-${currentSublevel}`;
             setLevelTimes(prev => ({
                 ...prev,
-                [currentLevel]: {
+                [key]: {
                     startTime: currentLevelStartTime,
                     endTime,
                     duration: endTime - currentLevelStartTime,
@@ -141,12 +166,13 @@ export default function AssessmentPage() {
     };
 
     const handleNextLevel = async () => {
-        // Record current level time
+        // Record current sublevel time
         if (currentLevelStartTime) {
             const endTime = Date.now();
+            const key = `${currentLevel}-${currentSublevel}`;
             setLevelTimes(prev => ({
                 ...prev,
-                [currentLevel]: {
+                [key]: {
                     startTime: currentLevelStartTime,
                     endTime,
                     duration: endTime - currentLevelStartTime,
@@ -154,25 +180,43 @@ export default function AssessmentPage() {
             }));
         }
 
-        // Move to next level with transition
-        if (phase === "level1") {
-            setNextLevelInfo({level: 2, type: "Memory Test"});
+        const nextSublevel = currentSublevel + 1;
+        const nextLevel = currentLevel;
+
+        // Check if we need to advance to next level or next sublevel
+        if (nextSublevel > SUBLEVELS_PER_LEVEL) {
+            // Move to next level
+            if (currentLevel >= MAX_LEVELS) {
+                // Assessment complete
+                handleFinish();
+                return;
+            }
+
+            const newLevel = currentLevel + 1;
+            setNextLevelInfo({
+                level: newLevel,
+                sublevel: 1,
+                type: getLevelName(newLevel)
+            });
             setShowLevelTransition(true);
             setTimeout(() => {
                 setShowLevelTransition(false);
                 setPhase("countdown");
                 setCountdown(3);
             }, 3000);
-        } else if (phase === "level2") {
-            setNextLevelInfo({level: 3, type: "Attention Test"});
-            setShowLevelTransition(true);
+        } else {
+            // Move to next sublevel
+            setNextLevelInfo({
+                level: nextLevel,
+                sublevel: nextSublevel,
+                type: `${getLevelName(nextLevel)} - Part ${nextSublevel}`
+            });
+            setShowSublevelTransition(true);
             setTimeout(() => {
-                setShowLevelTransition(false);
+                setShowSublevelTransition(false);
                 setPhase("countdown");
                 setCountdown(3);
-            }, 3000);
-        } else if (phase === "level3") {
-            handleFinish();
+            }, 2000);
         }
     };
 
@@ -203,7 +247,30 @@ export default function AssessmentPage() {
                             <div className="text-white text-8xl mb-6">✅</div>
                             <h2 className="text-white text-6xl font-black mb-4">Level {nextLevelInfo.level - 1} Complete!</h2>
                             <p className="text-white text-3xl font-medium">Get ready for Level {nextLevelInfo.level}</p>
-                            <p className="text-white/80 text-2xl mt-2">{nextLevelInfo.type}</p>
+                            <p className="text-white/80 text-2xl mt-2 capitalize">{getLevelName(nextLevelInfo.level)}</p>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            {/* Sublevel Transition Overlay */}
+            <AnimatePresence>
+                {showSublevelTransition && nextLevelInfo && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-[100] bg-gradient-to-br from-green-500 to-teal-600 flex items-center justify-center"
+                    >
+                        <motion.div
+                            initial={{ scale: 0.8, opacity: 0 }}
+                            animate={{ scale: 1, opacity: 1 }}
+                            transition={{ duration: 0.3 }}
+                            className="text-center"
+                        >
+                            <div className="text-white text-7xl mb-4">🎯</div>
+                            <h2 className="text-white text-5xl font-black mb-3">Part {nextLevelInfo.sublevel - 1} Complete!</h2>
+                            <p className="text-white text-2xl font-medium">Next: Part {nextLevelInfo.sublevel}</p>
                         </motion.div>
                     </motion.div>
                 )}
@@ -234,7 +301,7 @@ export default function AssessmentPage() {
 
             {/* HUD - Always visible during test */}
             <AnimatePresence>
-                {phase !== "intro" && phase !== "completed" && phase !== "countdown" && !showLevelTransition && (
+                {phase === "testing" && (
                     <motion.div
                         initial={{ opacity: 0, y: -50 }}
                         animate={{ opacity: 1, y: 0 }}
@@ -246,10 +313,13 @@ export default function AssessmentPage() {
                                 {/* Level Info */}
                                 <div className="flex items-center gap-4">
                                     <div className="px-6 py-3 bg-blue-600 text-white rounded-2xl font-black text-2xl">
-                                        Level {currentLevel}
+                                        Level {currentLevel}/{MAX_LEVELS}
+                                    </div>
+                                    <div className="px-6 py-3 bg-indigo-600 text-white rounded-2xl font-black text-2xl">
+                                        Part {currentSublevel}/{SUBLEVELS_PER_LEVEL}
                                     </div>
                                     <div className="px-6 py-3 bg-purple-600 text-white rounded-2xl capitalize font-bold text-xl">
-                                        {testType}
+                                        {getLevelName(currentLevel)}
                                     </div>
                                 </div>
 
@@ -322,39 +392,79 @@ export default function AssessmentPage() {
                                     Cognitive Assessment
                                 </h1>
                                 <p className="text-3xl text-gray-700 dark:text-gray-300 font-medium leading-relaxed">
-                                    You'll complete three simple tests.<br />
+                                    Complete 4 levels with 5 parts each<br />
                                     Take your time and do your best!
                                 </p>
                             </div>
 
-                            <div className="space-y-8 mb-12">
-                                <div className="p-8 bg-blue-100 dark:bg-blue-900/40 rounded-3xl border-4 border-blue-500">
-                                    <div className="flex items-center gap-4 mb-4">
-                                        <div className="text-6xl">1️⃣</div>
-                                        <h3 className="text-4xl font-black text-blue-700 dark:text-blue-300">Basic Test</h3>
+                            <div className="space-y-6 mb-12">
+                                <div className="p-6 bg-blue-100 dark:bg-blue-900/40 rounded-3xl border-4 border-blue-500">
+                                    <div className="flex items-center gap-4 mb-3">
+                                        <div className="text-5xl">1️⃣</div>
+                                        <h3 className="text-3xl font-black text-blue-700 dark:text-blue-300">Level 1: Basic Test</h3>
                                     </div>
-                                    <p className="text-2xl text-gray-800 dark:text-gray-200 leading-relaxed font-medium">
-                                        Click the numbered dots in order to connect them and form a shape.
+                                    <p className="text-xl text-gray-800 dark:text-gray-200 leading-relaxed font-medium">
+                                        Click numbered dots in order. 5 parts with increasing complexity.
                                     </p>
                                 </div>
 
-                                <div className="p-8 bg-purple-100 dark:bg-purple-900/40 rounded-3xl border-4 border-purple-500">
-                                    <div className="flex items-center gap-4 mb-4">
-                                        <div className="text-6xl">2️⃣</div>
-                                        <h3 className="text-4xl font-black text-purple-700 dark:text-purple-300">Memory Test</h3>
+                                <div className="p-6 bg-purple-100 dark:bg-purple-900/40 rounded-3xl border-4 border-purple-500">
+                                    <div className="flex items-center gap-4 mb-3">
+                                        <div className="text-5xl">2️⃣</div>
+                                        <h3 className="text-3xl font-black text-purple-700 dark:text-purple-300">Level 2: Memory Test</h3>
                                     </div>
-                                    <p className="text-2xl text-gray-800 dark:text-gray-200 leading-relaxed font-medium">
-                                        Some numbers will be hidden. Watch for yellow flashing dots to help you remember!
+                                    <p className="text-xl text-gray-800 dark:text-gray-200 leading-relaxed font-medium">
+                                        Some numbers hidden. Watch yellow flashing dots to remember!
                                     </p>
                                 </div>
 
-                                <div className="p-8 bg-green-100 dark:bg-green-900/40 rounded-3xl border-4 border-green-500">
-                                    <div className="flex items-center gap-4 mb-4">
-                                        <div className="text-6xl">3️⃣</div>
-                                        <h3 className="text-4xl font-black text-green-700 dark:text-green-300">Attention Test</h3>
+                                <div className="p-6 bg-green-100 dark:bg-green-900/40 rounded-3xl border-4 border-green-500">
+                                    <div className="flex items-center gap-4 mb-3">
+                                        <div className="text-5xl">3️⃣</div>
+                                        <h3 className="text-3xl font-black text-green-700 dark:text-green-300">Level 3: Attention Test</h3>
                                     </div>
-                                    <p className="text-2xl text-gray-800 dark:text-gray-200 leading-relaxed font-medium">
-                                        The dots will move slightly. Stay focused and click them in the right order!
+                                    <p className="text-xl text-gray-800 dark:text-gray-200 leading-relaxed font-medium">
+                                        Dots drift around! Stay focused on moving targets.
+                                    </p>
+                                </div>
+
+                                <div className="p-6 bg-orange-100 dark:bg-orange-900/40 rounded-3xl border-4 border-orange-500">
+                                    <div className="flex items-center gap-4 mb-3">
+                                        <div className="text-5xl">4️⃣</div>
+                                        <h3 className="text-3xl font-black text-orange-700 dark:text-orange-300">Level 4: Combined Test</h3>
+                                    </div>
+                                    <p className="text-xl text-gray-800 dark:text-gray-200 leading-relaxed font-medium">
+                                        Memory + Attention together! Hidden numbers AND drifting dots.
+                                    </p>
+                                </div>
+
+                                <div className="p-6 bg-pink-100 dark:bg-pink-900/40 rounded-3xl border-4 border-pink-500">
+                                    <div className="flex items-center gap-4 mb-3">
+                                        <div className="text-5xl">5️⃣</div>
+                                        <h3 className="text-3xl font-black text-pink-700 dark:text-pink-300">Level 5: Shape Recognition</h3>
+                                    </div>
+                                    <p className="text-xl text-gray-800 dark:text-gray-200 leading-relaxed font-medium">
+                                        Identify shapes from point clouds. Rate your confidence!
+                                    </p>
+                                </div>
+
+                                <div className="p-6 bg-cyan-100 dark:bg-cyan-900/40 rounded-3xl border-4 border-cyan-500">
+                                    <div className="flex items-center gap-4 mb-3">
+                                        <div className="text-5xl">6️⃣</div>
+                                        <h3 className="text-3xl font-black text-cyan-700 dark:text-cyan-300">Level 6: Intersection Detection</h3>
+                                    </div>
+                                    <p className="text-xl text-gray-800 dark:text-gray-200 leading-relaxed font-medium">
+                                        Watch moving polygons and detect when they overlap!
+                                    </p>
+                                </div>
+
+                                <div className="p-6 bg-rose-100 dark:bg-rose-900/40 rounded-3xl border-4 border-rose-500">
+                                    <div className="flex items-center gap-4 mb-3">
+                                        <div className="text-5xl">7️⃣</div>
+                                        <h3 className="text-3xl font-black text-rose-700 dark:text-rose-300">Level 7: Memory Reconstruction</h3>
+                                    </div>
+                                    <p className="text-xl text-gray-800 dark:text-gray-200 leading-relaxed font-medium">
+                                        Memorize a shape, then recreate it from memory!
                                     </p>
                                 </div>
                             </div>
@@ -370,7 +480,7 @@ export default function AssessmentPage() {
                             </Button>
                             
                             <p className="text-center text-2xl text-gray-600 dark:text-gray-400 mt-8 font-medium">
-                                ℹ️ The test will begin after a 3-second countdown
+                                ℹ️ 7 Levels × 5 Parts = 35 Total Tests • The test will begin after a 3-second countdown
                             </p>
                         </Card>
                     </motion.div>
