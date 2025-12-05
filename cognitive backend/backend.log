@@ -1,0 +1,20 @@
+INFO:     Will watch for changes in these directories: ['/Users/manasvenkatasairavulapalli/Desktop/Computer Science stuff/Pure CS/Computational Geometry/Final Project/Cogproject/cognitive-app/cognitive backend']
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [11297] using StatReload
+INFO:     Started server process [11486]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+Loaded shape: Bus (80 points)
+Loaded shape: Clock (80 points)
+Loaded shape: Dog (80 points)
+Loaded shape: House (80 points)
+Loaded shape: Leaf (80 points)
+Loaded shape: Cat (80 points)
+Loaded shape: Castle (80 points)
+Loaded shape: Train (80 points)
+Loaded shape: Bird (80 points)
+Loaded shape: Tree (80 points)
+Total shapes loaded: 10
+Point-cloud manager initialized successfully
+INFO:     127.0.0.1:61160 - "GET /health HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:61241 - "GET / HTTP/1.1" 404 Not Found

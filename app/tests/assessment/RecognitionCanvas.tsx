@@ -153,7 +153,7 @@ export default function RecognitionCanvas({
                     ]}
                     color="primary"
                     showTooltip={false}
-                    disabled={submitted}
+                    isDisabled={submitted}
                 />
                 <div className="text-center text-2xl font-bold text-blue-600">
                     {"⭐".repeat(confidence)}
@@ -166,7 +166,7 @@ export default function RecognitionCanvas({
                 color="primary"
                 variant="shadow"
                 onClick={handleSubmit}
-                disabled={selectedIndex === null || submitted}
+                isDisabled={selectedIndex === null || submitted}
                 className="w-full text-2xl py-8 font-black rounded-2xl"
             >
                 {submitted ? "Submitted! ✓" : "Submit Answer"}

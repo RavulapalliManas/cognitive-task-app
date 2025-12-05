@@ -122,13 +122,59 @@ class GradeResponse(BaseModel):
 # Utility / Geometry functions
 # -----------------------------
 
-def sample_points_in_box(n: int, bbox: Tuple[float,float,float,float]=(0,0,1,1), seed: Optional[int]=None):
+def sample_points_in_box(n: int, bbox: Tuple[float,float,float,float]=(0,0,1,1), seed: Optional[int]=None, min_distance: float=0.08):
+    """Sample points with minimum distance constraint to prevent overlapping"""
     if seed is not None:
         np.random.seed(seed)
     (x0,y0,x1,y1) = bbox
-    xs = np.random.uniform(x0, x1, size=n)
-    ys = np.random.uniform(y0, y1, size=n)
-    return np.column_stack([xs, ys])
+    
+    points = []
+    max_attempts = n * 100  # Prevent infinite loop
+    attempts = 0
+    
+    while len(points) < n and attempts < max_attempts:
+        x = np.random.uniform(x0, x1)
+        y = np.random.uniform(y0, y1)
+        new_point = np.array([x, y])
+        
+        # Check distance to all existing points
+        if len(points) == 0:
+            points.append(new_point)
+        else:
+            distances = np.sqrt(np.sum((np.array(points) - new_point)**2, axis=1))
+            if np.all(distances >= min_distance):
+                points.append(new_point)
+        
+        attempts += 1
+    
+    # If we couldn't generate enough points with min_distance, relax it
+    if len(points) < n:
+        remaining = n - len(points)
+        # Try one more time with smaller distance
+        attempts = 0
+        while len(points) < n and attempts < 50:
+             x = np.random.uniform(x0, x1)
+             y = np.random.uniform(y0, y1)
+             new_p = np.array([x,y])
+             # minimal check
+             dists = np.sqrt(np.sum((np.array(points) - new_p)**2, axis=1))
+             if np.all(dists >= min_distance * 0.1): # significantly relaxed
+                 points.append(new_p)
+             attempts += 1
+             
+        # Hard fallback: Grid or random without check ensuring unique coords
+        if len(points) < n:
+             remaining = n - len(points)
+             # Add tiny jitters to ensure uniqueness
+             for _ in range(remaining):
+                 rx = np.random.uniform(x0, x1)
+                 ry = np.random.uniform(y0, y1)
+                 # Ensure slight offset if it matches any existing
+                 while any(np.linalg.norm(p - np.array([rx,ry])) < 1e-5 for p in points):
+                      rx = np.random.uniform(x0, x1)
+                 points.append(np.array([rx, ry]))
+    
+    return np.array(points)
 
 
 def convex_hull_indices(points: np.ndarray):
@@ -181,13 +227,25 @@ def boundary_from_triangle_mesh(points: np.ndarray, triangles: np.ndarray) -> Op
     ordered = [start]
     prev = None
     cur = start
-    while True:
-        neighs = adj[cur]
+    safety_counter = 0
+    max_iter = len(points) * 2  # Boundary can't be longer than 2x total points roughly
+
+    while safety_counter < max_iter:
+        neighs = adj.get(cur)
+        if not neighs: 
+            break
+        
         nxt = neighs[0] if neighs[0] != prev else (neighs[1] if len(neighs)>1 else None)
         if nxt is None or nxt == start:
             break
         ordered.append(nxt)
         prev, cur = cur, nxt
+        safety_counter += 1
+    
+    if safety_counter >= max_iter:
+        # Failed to find closed loop or infinite loop detected
+        return None
+        
     return ordered
 
 # -----------------------------
@@ -273,6 +331,7 @@ def make_labels(n: int, scheme: str = 'numeric') -> List[str]:
 @app.post('/generate_polygon', response_model=GenerateResponse)
 def generate_polygon(req: GenerateRequest):
     """Generate a non-crossing polygon and return ordered boundary and labels."""
+    print(f"DEBUG: Generating polygon Level {req.level}, Sublevel {req.sublevel}")
     seed = req.seed if req.seed is not None else random.randint(0, 2**30)
     # Map difficulty to vertex counts if not provided
     vc_map = {
@@ -442,7 +501,14 @@ class Level5GradeResponse(BaseModel):
 def generate_level_5(req: Level5GenerateRequest):
     """Generate shape recognition task for Level 5."""
     try:
+        # Lazy-load point cloud manager only when Level 5 is actually used
         manager = get_point_cloud_manager()
+        if manager is None:
+            # First time loading - initialize it
+            initialize_point_cloud_manager(POINTCLOUD_DIR)
+            manager = get_point_cloud_manager()
+            if manager is None:
+                raise HTTPException(status_code=500, detail="Failed to initialize point-cloud manager")
         
         # Get difficulty parameters
         params = manager.get_difficulty_params(req.level, req.sublevel)

@@ -1,11 +1,14 @@
 const BASE_URL = "http://127.0.0.1:8000";
 
-export async function generatePolygon(level: number, sublevel: number) {
+export async function generatePolygon(level: number, sublevel: number = 1) {
     const res = await fetch(`${BASE_URL}/generate_polygon`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ level, sublevel })
     });
+    if (!res.ok) {
+        throw new Error(`HTTP error! status: ${res.status}`);
+    }
     return res.json();
 }
 
@@ -15,6 +18,9 @@ export async function generatePartial(level: number, sublevel: number, label_cov
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ level, sublevel, label_coverage })
     });
+    if (!res.ok) {
+        throw new Error(`HTTP error! status: ${res.status}`);
+    }
     return res.json();
 }
 
@@ -30,6 +36,9 @@ export async function generateAttention(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ level, sublevel, drift_amplitude, drift_frequency, highlight_probability })
     });
+    if (!res.ok) {
+        throw new Error(`HTTP error! status: ${res.status}`);
+    }
     return res.json();
 }
 
@@ -46,12 +55,15 @@ export async function gradeSubmission(data: any) {
 // LEVEL 5: SHAPE RECOGNITION
 // =====================================================
 
-export async function generateLevel5(level: number, sublevel: number, seed?: number) {
+export async function generateLevel5(sublevel: number, seed?: number) {
     const res = await fetch(`${BASE_URL}/generate_level_5`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ level, sublevel, seed })
+        body: JSON.stringify({ sublevel, seed })
     });
+    if (!res.ok) {
+        throw new Error(`HTTP error! status: ${res.status}`);
+    }
     return res.json();
 }
 
@@ -74,12 +86,15 @@ export async function gradeLevel5(data: {
 // LEVEL 6: POLYGON INTERSECTION
 // =====================================================
 
-export async function generateLevel6(level: number, sublevel: number, seed?: number) {
+export async function generateLevel6(sublevel: number, seed?: number) {
     const res = await fetch(`${BASE_URL}/generate_level_6`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ level, sublevel, seed })
+        body: JSON.stringify({ sublevel, seed })
     });
+    if (!res.ok) {
+        throw new Error(`HTTP error! status: ${res.status}`);
+    }
     return res.json();
 }
 
@@ -114,12 +129,15 @@ export async function gradeLevel6(data: {
 // LEVEL 7: MEMORY RECONSTRUCTION
 // =====================================================
 
-export async function generateLevel7(level: number, sublevel: number, seed?: number) {
+export async function generateLevel7(sublevel: number, seed?: number) {
     const res = await fetch(`${BASE_URL}/generate_level_7`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ level, sublevel, seed })
+        body: JSON.stringify({ sublevel, seed })
     });
+    if (!res.ok) {
+        throw new Error(`HTTP error! status: ${res.status}`);
+    }
     return res.json();
 }
 
