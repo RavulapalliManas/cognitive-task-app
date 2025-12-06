@@ -16,7 +16,9 @@ export function useTracingTask() {
     const [mistakes, setMistakes] = useState<number>(0);
     const [driftParameters, setDriftParameters] = useState<any>(null);
     const [highlightSchedule, setHighlightSchedule] = useState<any[]>([]);
+    const [hiddenIndices, setHiddenIndices] = useState<number[]>([]);
     const [clickedIndices, setClickedIndices] = useState<Set<number>>(new Set());
+    const kineticRef = useState<{ current: any[] }>({ current: [] })[0]; // Use ref pattern but force stability
 
     const startTracing = useCallback(async (level: number, sublevel: number, type: TestType) => {
         // Clear state
@@ -27,6 +29,9 @@ export function useTracingTask() {
         setTrueOrder([]);
         setDriftParameters(null);
         setHighlightSchedule([]);
+        setHiddenIndices([]); // Clear previous
+        kineticRef.current = []; // Reset kinetic data
+
 
         let data;
         if (type === "basic") {
@@ -34,6 +39,7 @@ export function useTracingTask() {
         } else if (type === "memory") {
             const labelCoverage = Math.max(0.55, 1.05 - (sublevel * 0.1));
             data = await generatePartial(level, sublevel, labelCoverage);
+            setHiddenIndices(data.hidden_indices || []); // Store valid hidden indices
 
             if (data.points && data.points.length > 0) {
                 const flashPercentage = 0.20 + (sublevel - 1) * 0.05;
@@ -58,18 +64,7 @@ export function useTracingTask() {
             data = await generateAttention(level, sublevel, driftAmplitude, driftFrequency, 0.15);
 
             if (data.points && data.points.length > 0) {
-                let numToDrift = 1;
-                if (sublevel >= 3) numToDrift = 2;
-
-                const indices = data.points.map((_: any, i: number) => i);
-                const shuffled = indices.sort(() => Math.random() - 0.5);
-                const driftingIndices = shuffled.slice(0, numToDrift);
-
-                data.driftParameters = {
-                    amplitude: driftAmplitude,
-                    frequency: driftFrequency,
-                    driftingIndices
-                };
+                // Use backend provided drift parameters
                 data.highlight_schedule = [];
             }
         } else if (type === "combined") {
@@ -96,14 +91,7 @@ export function useTracingTask() {
                 });
                 data.highlight_schedule = schedule;
 
-                const numToDrift = sublevel >= 2 ? 2 : 1;
-                const driftIndices = shuffled.slice(numToFlash, numToFlash + numToDrift);
-
-                data.driftParameters = {
-                    amplitude: driftAmplitude,
-                    frequency: driftFrequency,
-                    driftingIndices: driftIndices
-                };
+                // Use backend provided drift parameters
             }
         }
 
@@ -157,12 +145,16 @@ export function useTracingTask() {
             start_time_ms: startTime,
             end_time_ms: end,
             mistakes: mistakes,
+            level: currentLevel,   // Added top-level
+            sublevel: currentSublevel, // Added top-level
             metadata: {
                 total_clicks: submissions.length,
                 test_type: type,
                 level: currentLevel,
-                sublevel: currentSublevel
-            }
+                sublevel: currentSublevel,
+                kinetic_data: kineticRef.current // Pass Kinetic Convex Hull history
+            },
+            points: points // Pass points for Delaunay analysis
         });
     }, [trueOrder, submissions, mistakes]);
 
@@ -173,9 +165,11 @@ export function useTracingTask() {
         mistakes,
         driftParameters,
         highlightSchedule,
+        hiddenIndices,
         startTracing,
         recordClick,
         undoLastClick,
-        submitTracing
+        submitTracing,
+        kineticRef
     };
 }

@@ -2,10 +2,15 @@
 
 import { motion } from "framer-motion";
 import { Card, CardBody, Button, Progress } from "@heroui/react";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
 import { computeCompositeScore } from "@/lib/backend";
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar,
+  ScatterChart, Scatter, ZAxis, BarChart, Bar
+} from 'recharts';
 
 interface LevelResult {
   level: number;
@@ -16,6 +21,17 @@ interface LevelResult {
   timeTaken: number;
   mistakes: number;
   timestamp: number;
+  // Advanced metrics
+  lure_susceptibility?: number;
+  pei?: number;
+  tremor_score?: number;
+  drift_vector?: { x: number, y: number }[];
+  hull_rt_correlation?: number;
+  avg_spatial_error?: number; // L2
+  tunnel_vision_risk?: number; // L3/L4
+  confidence_score?: number; // L5
+  arkin_dissimilarity?: number; // L7
+  jerk_metric?: number; // L7
 }
 
 interface CognitiveProfile {
@@ -36,26 +52,38 @@ export default function ResultsPage() {
     const name = localStorage.getItem("userName");
     if (name) setUserName(name);
 
-    // Load all results from localStorage (35 total: 7 levels × 5 sublevels)
-    const loadedResults: LevelResult[] = [];
-    for (let level = 1; level <= 7; level++) {
-      for (let sublevel = 1; sublevel <= 5; sublevel++) {
-        const key = `assessment_${level}_${sublevel}`;
-        const data = localStorage.getItem(key);
-        if (data) {
-          const parsed = JSON.parse(data);
-          loadedResults.push({
-            level,
-            sublevel,
-            testType: getLevelName(level),
-            score: parsed.score || 0,
-            accuracy: parsed.accuracy || 0,
-            timeTaken: parsed.time_taken_ms || 0,
-            mistakes: parsed.mistakes || 0,
-            timestamp: parsed.timestamp || Date.now(),
-          });
-        }
+    // Load detailed results from new storage format "assessment_results"
+    const storedResults = localStorage.getItem("assessment_results");
+    let loadedResults: LevelResult[] = [];
+
+    if (storedResults) {
+      try {
+        const parsed = JSON.parse(storedResults);
+        loadedResults = parsed.map((r: any) => ({
+          level: r.level,
+          sublevel: r.sublevel,
+          testType: getLevelName(r.level),
+          score: r.composite_score || r.score || 0,
+          accuracy: r.accuracy_score || r.accuracy || 0,
+          timeTaken: r.time_score ? 0 : (r.timeTaken || 0), // If normalized score, raw time might be missing
+          mistakes: r.mistakes_reported || r.mistakes || 0,
+          timestamp: r.timestamp || Date.now(),
+          lure_susceptibility: r.lure_susceptibility ?? r.details?.lure_susceptibility,
+          pei: r.pei ?? r.details?.pei,
+          tremor_score: r.tremor_score ?? r.details?.tremor_score,
+          hull_rt_correlation: r.hull_rt_correlation ?? r.details?.hull_rt_correlation,
+          drift_vector: r.drift_vectors ?? r.details?.drift_vectors,
+          avg_spatial_error: r.hausdorff_distance ?? r.avg_spatial_error ?? r.details?.avg_spatial_error,
+          tunnel_vision_risk: r.tunnel_vision_risk ?? r.details?.tunnel_vision_risk,
+          confidence_score: r.confidence_score ?? r.details?.confidence_score,
+          arkin_dissimilarity: r.arkin_similarity ?? r.arkin_dissimilarity ?? r.details?.arkin_dissimilarity,
+          jerk_metric: r.jerk_metric ?? r.details?.jerk_metric
+        }));
+      } catch (e) {
+        console.error("Failed to parse results", e);
       }
+    } else {
+      // Fallback to legacy format check (optional, but skipping for valid current flow)
     }
 
     setResults(loadedResults);
@@ -69,7 +97,7 @@ export default function ResultsPage() {
   }, []);
 
   const getLevelName = (level: number): string => {
-    const names = ["", "Basic", "Memory", "Attention", "Combined", "Recognition", "Intersection", "Reconstruction"];
+    const names = ["", "Path Integration", "Spatial Memory", "Sustained Attention", "Dual Task", "Shape Recognition", "Intersection Drawing", "Maze Tracing", "Navigation"];
     return names[level] || "Test";
   };
 
@@ -96,12 +124,12 @@ export default function ResultsPage() {
         attention: response.cognitive_profile.attention,
         visuospatial: response.cognitive_profile.visuospatial,
         recognition: response.cognitive_profile.recognition,
-        overall: response.overall_score,
+        overall: response.composite_score,
       });
     } catch (error) {
-      console.error("Error computing profile:", error);
-      // Fallback to simple averaging
-      const avgScore = results.reduce((acc, r) => acc + r.score, 0) / results.length;
+      //   console.error("Error computing profile:", error);
+      // Fallback
+      const avgScore = results.reduce((acc, r) => acc + r.score, 0) / (results.length || 1);
       setCognitiveProfile({
         memory: avgScore,
         attention: avgScore,
@@ -114,272 +142,225 @@ export default function ResultsPage() {
     }
   };
 
-  const getScoreColor = (score: number) => {
-    if (score >= 90) return "text-green-600 dark:text-green-400";
-    if (score >= 75) return "text-blue-600 dark:text-blue-400";
-    if (score >= 60) return "text-yellow-600 dark:text-yellow-400";
-    return "text-red-600 dark:text-red-400";
-  };
-
-  const getScoreLabel = (score: number) => {
-    if (score >= 90) return "Excellent";
-    if (score >= 75) return "Good";
-    if (score >= 60) return "Average";
-    return "Needs Improvement";
-  };
-
-  const formatTime = (ms: number) => {
-    const seconds = Math.floor(ms / 1000);
-    const minutes = Math.floor(seconds / 60);
-    const remainingSeconds = seconds % 60;
-    return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
-  };
-
-  // Simple radar chart with CSS
-  const RadarChart = ({ profile }: { profile: CognitiveProfile }) => {
-    const domains = [
-      { name: "Memory", value: profile.memory, color: "bg-blue-500" },
-      { name: "Attention", value: profile.attention, color: "bg-green-500" },
-      { name: "Visuospatial", value: profile.visuospatial, color: "bg-purple-500" },
-      { name: "Recognition", value: profile.recognition, color: "bg-orange-500" },
+  const radarData = useMemo(() => {
+    if (!cognitiveProfile) return [];
+    return [
+      { subject: 'Memory', A: cognitiveProfile.memory, fullMark: 100 },
+      { subject: 'Attention', A: cognitiveProfile.attention, fullMark: 100 },
+      { subject: 'Visuospatial', A: cognitiveProfile.visuospatial, fullMark: 100 },
+      { subject: 'Recognition', A: cognitiveProfile.recognition, fullMark: 100 },
     ];
+  }, [cognitiveProfile]);
 
-    return (
-      <div className="grid grid-cols-2 gap-6">
-        {domains.map((domain, idx) => (
-          <div key={idx} className="space-y-2">
-            <div className="flex justify-between items-center">
-              <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">
-                {domain.name}
-              </span>
-              <span className={`text-lg font-bold ${getScoreColor(domain.value)}`}>
-                {Math.round(domain.value)}
-              </span>
-            </div>
-            <Progress
-              value={domain.value}
-              className="h-3"
-              classNames={{
-                indicator: domain.color,
-              }}
-            />
-          </div>
-        ))}
-      </div>
-    );
-  };
+  const tremorData = useMemo(() => {
+    // Map across levels that track motor control (L1, L7 mainly)
+    return results
+      .filter(r => r.tremor_score !== undefined || r.pei !== undefined)
+      .map(r => ({
+        name: `${getLevelName(r.level)} P${r.sublevel}`,
+        tremor: r.tremor_score || 0,
+        pei: r.pei || 0
+      }));
+  }, [results]);
+
+  const rtData = useMemo(() => {
+    // Collect RT across levels
+    return results
+      .sort((a, b) => a.level - b.level || a.sublevel - b.sublevel)
+      .map(r => ({
+        name: `L${r.level}`,
+        rt: r.timeTaken / 1000 // Seconds
+      }));
+  }, [results]);
+
+  const cognitiveLoadData = useMemo(() => {
+    // Compare Level 1 (Baseline) vs Level 4 (Dual Task) to show "Switching Cost"
+    const l1 = results.filter(r => r.level === 1);
+    const l4 = results.filter(r => r.level === 4);
+
+    const l1Avg = l1.reduce((a, b) => a + b.score, 0) / (l1.length || 1);
+    const l4Avg = l4.reduce((a, b) => a + b.score, 0) / (l4.length || 1);
+
+    return [
+      { name: 'Baseline (L1)', score: l1Avg, fill: '#3b82f6' },
+      { name: 'Dual Task (L4)', score: l4Avg, fill: '#f59e0b' }
+    ];
+  }, [results]);
+
+  const driftData = useMemo(() => {
+    // Aggregate all drift vectors from Level 2
+    const vectors: { x: number, y: number, z: number }[] = [];
+    results.filter(r => r.level === 2 && r.drift_vector).forEach(r => {
+      r.drift_vector?.forEach(v => {
+        vectors.push({ x: v.x, y: v.y, z: 1 });
+      });
+    });
+    return vectors;
+  }, [results]);
 
   return (
     <>
       <Navbar />
-      <div className="min-h-screen bg-white dark:bg-gray-900 px-6 pt-28 pb-20">
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 px-6 pt-28 pb-20">
         <div className="max-w-7xl mx-auto">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6 }}
-            className="mb-12"
+            className="mb-12 flex justify-between items-end"
           >
-            <h1 className="text-5xl font-bold text-gray-900 dark:text-white mb-4">
-              Cognitive Profile: {userName}
-            </h1>
-            <p className="text-lg text-gray-600 dark:text-gray-300">
-              Comprehensive analysis of your cognitive performance across 7 domains
-            </p>
+            <div>
+              <h1 className="text-5xl font-black text-gray-900 dark:text-white mb-4">
+                Neuro-Dashboard
+              </h1>
+              <p className="text-xl text-gray-600 dark:text-gray-300">
+                Patient: <span className="font-bold text-blue-600">{userName}</span> • {new Date().toLocaleDateString()}
+              </p>
+            </div>
+            {cognitiveProfile && (
+              <div className="text-right">
+                <div className="text-6xl font-black text-blue-600">{Math.round(cognitiveProfile.overall)}</div>
+                <div className="text-gray-500 font-bold uppercase tracking-wider">Composite Score</div>
+              </div>
+            )}
           </motion.div>
 
           {loading ? (
-            <div className="text-center py-20">
-              <div className="text-6xl mb-4">⏳</div>
-              <p className="text-xl text-gray-600 dark:text-gray-300">
-                Computing your cognitive profile...
-              </p>
-            </div>
-          ) : results.length === 0 ? (
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.6 }}
-              className="text-center py-20"
-            >
-              <div className="text-6xl mb-6">🧠</div>
-              <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">
-                No Results Yet
-              </h2>
-              <p className="text-lg text-gray-600 dark:text-gray-300 mb-8">
-                Complete the cognitive assessment to see your results
-              </p>
-              <Button
-                size="lg"
-                className="bg-blue-500 text-white hover:bg-blue-600 text-xl px-8 py-6 rounded-2xl"
-                onClick={() => (window.location.href = "/tests/assessment")}
-              >
-                Take Assessment
-              </Button>
-            </motion.div>
+            <div className="p-20 text-center text-2xl animate-pulse">Analyzing biomarks...</div>
+          ) : !cognitiveProfile ? (
+            <div className="p-20 text-center">No data found.</div>
           ) : (
-            <>
-              {/* Overall Score Card */}
-              {cognitiveProfile && (
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.6, delay: 0.1 }}
-                  className="mb-8"
-                >
-                  <Card className="rounded-3xl shadow-2xl border-4 border-blue-500 bg-gradient-to-br from-blue-50 to-purple-50 dark:from-blue-900/30 dark:to-purple-900/30">
-                    <CardBody className="p-10">
-                      <div className="text-center mb-8">
-                        <div className="text-7xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-purple-600 mb-2">
-                          {Math.round(cognitiveProfile.overall)}
-                        </div>
-                        <div className="text-2xl font-bold text-gray-700 dark:text-gray-300 mb-1">
-                          Overall Cognitive Score
-                        </div>
-                        <div className={`text-xl font-semibold ${getScoreColor(cognitiveProfile.overall)}`}>
-                          {getScoreLabel(cognitiveProfile.overall)}
-                        </div>
-                      </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
 
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                        <div className="text-center p-4 bg-white dark:bg-gray-800 rounded-2xl shadow">
-                          <div className="text-3xl font-bold text-blue-600 dark:text-blue-400 mb-2">
-                            {results.length}
-                          </div>
-                          <div className="text-sm text-gray-600 dark:text-gray-300 font-medium">
-                            Tests Completed
-                          </div>
-                        </div>
-                        <div className="text-center p-4 bg-white dark:bg-gray-800 rounded-2xl shadow">
-                          <div className="text-3xl font-bold text-green-600 dark:text-green-400 mb-2">
-                            {Math.round((results.filter(r => r.score >= 75).length / results.length) * 100)}%
-                          </div>
-                          <div className="text-sm text-gray-600 dark:text-gray-300 font-medium">
-                            Success Rate
-                          </div>
-                        </div>
-                        <div className="text-center p-4 bg-white dark:bg-gray-800 rounded-2xl shadow">
-                          <div className="text-3xl font-bold text-purple-600 dark:text-purple-400 mb-2">
-                            {formatTime(results.reduce((acc, r) => acc + r.timeTaken, 0))}
-                          </div>
-                          <div className="text-sm text-gray-600 dark:text-gray-300 font-medium">
-                            Total Time
-                          </div>
-                        </div>
-                      </div>
-                    </CardBody>
-                  </Card>
-                </motion.div>
-              )}
+              {/* Cognitive Profile Radar */}
+              <Card className="rounded-3xl shadow-xl bg-white dark:bg-gray-800 p-6">
+                <h3 className="text-2xl font-bold mb-6 text-gray-800 dark:text-white">Cognitive Profile</h3>
+                <div className="h-[300px] w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <RadarChart cx="50%" cy="50%" outerRadius="80%" data={radarData}>
+                      <PolarGrid />
+                      <PolarAngleAxis dataKey="subject" />
+                      <PolarRadiusAxis angle={30} domain={[0, 100]} />
+                      <Radar name="User" dataKey="A" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.6} />
+                      <Tooltip />
+                    </RadarChart>
+                  </ResponsiveContainer>
+                </div>
+              </Card>
 
-              {/* Cognitive Domain Breakdown */}
-              {cognitiveProfile && (
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.6, delay: 0.2 }}
-                  className="mb-8"
-                >
-                  <Card className="rounded-3xl shadow-xl bg-white dark:bg-gray-800">
-                    <CardBody className="p-8">
-                      <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-6">
-                        🧩 Cognitive Domain Analysis
-                      </h2>
-                      <RadarChart profile={cognitiveProfile} />
-                    </CardBody>
-                  </Card>
-                </motion.div>
-              )}
+              {/* Cognitive Drift Map (New) */}
+              <Card className="rounded-3xl shadow-xl bg-white dark:bg-gray-800 p-6">
+                <h3 className="text-2xl font-bold mb-2 text-gray-800 dark:text-white">Cognitive Drift Map</h3>
+                <p className="text-gray-500 mb-6 text-sm">Spatial memory bias. Points offset from center (0,0) indicate drift direction.</p>
+                <div className="h-[300px] w-full flex items-center justify-center relative">
+                  {/* Crosshair background */}
+                  <div className="absolute inset-0 flex items-center justify-center opacity-10 pointer-events-none">
+                    <div className="w-full h-0.5 bg-gray-500"></div>
+                    <div className="h-full w-0.5 bg-gray-500 absolute"></div>
+                  </div>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ScatterChart>
+                      <CartesianGrid />
+                      <XAxis type="number" dataKey="x" name="Horizontal Error" unit="px" domain={[-100, 100]} />
+                      <YAxis type="number" dataKey="y" name="Vertical Error" unit="px" domain={[-100, 100]} />
+                      <Tooltip cursor={{ strokeDasharray: '3 3' }} />
+                      <Scatter name="Drift" data={driftData} fill="#ef4444" />
+                    </ScatterChart>
+                  </ResponsiveContainer>
+                  {driftData.length === 0 && <div className="absolute text-gray-400">No drift data available (Level 2 required)</div>}
+                </div>
+              </Card>
 
-              {/* Level-by-Level Breakdown */}
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.6, delay: 0.3 }}
-                className="mb-8"
-              >
-                <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-6">
-                  📊 Detailed Performance
-                </h2>
+              {/* Cognitive Load Cost */}
+              <Card className="rounded-3xl shadow-xl bg-white dark:bg-gray-800 p-6">
+                <h3 className="text-2xl font-bold mb-2 text-gray-800 dark:text-white">Cognitive Load Cost</h3>
+                <p className="text-gray-500 mb-6 text-sm">Performance drop under Dual Task conditions (L1 vs L4)</p>
+                <div className="h-[300px] w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={cognitiveLoadData} layout="vertical">
+                      <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                      <XAxis type="number" domain={[0, 100]} />
+                      <YAxis dataKey="name" type="category" width={100} />
+                      <Tooltip />
+                      <Bar dataKey="score" radius={[0, 10, 10, 0]} barSize={40} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </Card>
 
-                {/* Group by level */}
-                {[1, 2, 3, 4, 5, 6, 7].map((level) => {
-                  const levelResults = results.filter((r) => r.level === level);
-                  if (levelResults.length === 0) return null;
+              {/* Reaction Time Analysis (New) */}
+              <Card className="rounded-3xl shadow-xl bg-white dark:bg-gray-800 p-6">
+                <h3 className="text-2xl font-bold mb-2 text-gray-800 dark:text-white">Reaction Time Trends</h3>
+                <p className="text-gray-500 mb-6 text-sm">Processing speed across all task levels (Seconds)</p>
+                <div className="h-[300px] w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={rtData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="name" />
+                      <YAxis />
+                      <Tooltip />
+                      <Line type="monotone" dataKey="rt" stroke="#8b5cf6" strokeWidth={3} dot={{ r: 4 }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </Card>
 
-                  const avgScore = levelResults.reduce((acc, r) => acc + r.score, 0) / levelResults.length;
-                  const avgTime = levelResults.reduce((acc, r) => acc + r.timeTaken, 0) / levelResults.length;
+              {/* Motor Control / Tremor Analysis */}
+              <Card className="rounded-3xl shadow-xl bg-white dark:bg-gray-800 p-6">
+                <h3 className="text-2xl font-bold mb-2 text-gray-800 dark:text-white">Motor Control Stability</h3>
+                <p className="text-gray-500 mb-6 text-sm">Tremor score (lower is better) & Path Efficiency (higher is better)</p>
+                <div className="h-[300px] w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={tremorData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="name" hide />
+                      <YAxis />
+                      <Tooltip />
+                      <Legend />
+                      <Line type="monotone" dataKey="tremor" stroke="#ef4444" name="Tremor Idx" strokeWidth={2} />
+                      <Line type="monotone" dataKey="pei" stroke="#10b981" name="Path Eff." strokeWidth={2} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </Card>
 
-                  return (
-                    <Card key={level} className="mb-4 rounded-2xl shadow-lg bg-white dark:bg-gray-800">
-                      <CardBody className="p-6">
-                        <div className="flex items-center justify-between mb-4">
-                          <div>
-                            <h3 className="text-2xl font-bold text-gray-900 dark:text-white">
-                              Level {level}: {getLevelName(level)}
-                            </h3>
-                            <p className="text-sm text-gray-500 dark:text-gray-400">
-                              {levelResults.length} parts completed
-                            </p>
-                          </div>
-                          <div className="text-right">
-                            <div className={`text-4xl font-black ${getScoreColor(avgScore)}`}>
-                              {Math.round(avgScore)}
-                            </div>
-                            <div className="text-sm text-gray-500 dark:text-gray-400">
-                              Average Score
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="grid grid-cols-5 gap-3">
-                          {levelResults.map((result) => (
-                            <div
-                              key={`${result.level}-${result.sublevel}`}
-                              className="p-3 bg-gray-50 dark:bg-gray-700 rounded-xl text-center"
-                            >
-                              <div className="text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1">
-                                Part {result.sublevel}
-                              </div>
-                              <div className={`text-2xl font-bold ${getScoreColor(result.score)}`}>
-                                {Math.round(result.score)}
-                              </div>
-                              <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                                {formatTime(result.timeTaken)}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </CardBody>
-                    </Card>
-                  );
-                })}
-              </motion.div>
-
-              {/* Action Buttons */}
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.6, delay: 0.4 }}
-                className="flex gap-4 justify-center"
-              >
-                <Button
-                  size="lg"
-                  className="bg-blue-500 text-white hover:bg-blue-600 text-xl px-8 py-6 rounded-2xl"
-                  onClick={() => (window.location.href = "/tests/assessment")}
-                >
-                  Retake Assessment
-                </Button>
-                <Button
-                  size="lg"
-                  variant="bordered"
-                  className="border-2 border-gray-300 dark:border-gray-600 text-xl px-8 py-6 rounded-2xl"
-                  onClick={() => window.print()}
-                >
-                  Print Results
-                </Button>
-              </motion.div>
-            </>
+              {/* Detailed Metrics Table */}
+              <Card className="lg:col-span-2 rounded-3xl shadow-xl bg-white dark:bg-gray-800 p-6">
+                <h3 className="text-2xl font-bold mb-6 text-gray-800 dark:text-white">Digital Biomarkers</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead className="text-gray-500 border-b border-gray-200 dark:border-gray-700">
+                      <tr>
+                        <th className="pb-3 pl-4">Task</th>
+                        <th className="pb-3">Score</th>
+                        <th className="pb-3">Accuracy</th>
+                        <th className="pb-3">Biomarkers</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                      {results.map((r, i) => (
+                        <tr key={i} className="hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors">
+                          <td className="py-4 pl-4 font-medium">
+                            <div className="text-gray-900 dark:text-white">{r.testType}</div>
+                            <div className="text-xs text-gray-500">Level {r.level}-{r.sublevel}</div>
+                          </td>
+                          <td className="py-4 font-bold text-blue-600">{Math.round(r.score)}</td>
+                          <td className="py-4">{(r.accuracy * 100).toFixed(0)}%</td>
+                          <td className="py-4 text-sm text-gray-600 dark:text-gray-400">
+                            {r.lure_susceptibility !== undefined && <div className="mb-1">Lure Susc: {(r.lure_susceptibility * 100).toFixed(1)}%</div>}
+                            {r.pei !== undefined && <div className="mb-1">PEI: {r.pei.toFixed(1)}</div>}
+                            {r.jerk_metric !== undefined && <div className="mb-1 text-orange-500">Jerk (Tremor): {r.jerk_metric.toFixed(1)}</div>}
+                            {r.hull_rt_correlation !== undefined && <div className="mb-1 text-red-500">Hull-RT Corr: {r.hull_rt_correlation.toFixed(2)}</div>}
+                            {r.arkin_dissimilarity !== undefined && <div className="mb-1">Shape Err (Arkin): {(r.arkin_dissimilarity * 100).toFixed(1)}%</div>}
+                            {r.avg_spatial_error !== undefined && <div className="mb-1">Spatial Err: {r.avg_spatial_error.toFixed(2)}px</div>}
+                            {r.tunnel_vision_risk !== undefined && r.tunnel_vision_risk > 0.5 && <div className="text-red-600 font-bold">⚠️ Tunnel Vision Risk</div>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            </div>
           )}
         </div>
       </div>

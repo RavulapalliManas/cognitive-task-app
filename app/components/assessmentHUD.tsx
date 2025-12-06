@@ -18,6 +18,9 @@ interface AssessmentHUDProps {
     showUndo: boolean;
     onUndo: () => void;
     formatTime: (ms: number) => string;
+    isPaused: boolean;
+    onTogglePause: () => void;
+    onSkipLevel?: (level: number) => void;
 }
 
 export default function AssessmentHUD({
@@ -35,6 +38,9 @@ export default function AssessmentHUD({
     showUndo,
     onUndo,
     formatTime,
+    isPaused,
+    onTogglePause,
+    onSkipLevel, // Added destructuring
 }: AssessmentHUDProps) {
     return (
         <div className="fixed top-0 left-0 right-0 z-50 bg-white dark:bg-gray-800 border-b-4 border-blue-500 shadow-xl">
@@ -117,7 +123,35 @@ export default function AssessmentHUD({
                             ↶ Undo
                         </Button>
                     )}
+
+                    {/* Pause Button - Moved to right of Undo */}
+                    <Button
+                        size="lg"
+                        color={isPaused ? "success" : "danger"}
+                        variant="ghost"
+                        onClick={onTogglePause}
+                        className="px-8 py-2 font-bold text-xl border-2"
+                    >
+                        {isPaused ? "▶ RESUME" : "⏸ PAUSE"}
+                    </Button>
                 </div>
+
+                {/* Admin Skip Controls */}
+                {onSkipLevel && (
+                    <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700/50 flex items-center justify-end gap-2 overflow-x-auto">
+                        <p className="text-[10px] text-gray-400 font-mono uppercase tracking-wider mr-2">Dev: Jump to</p>
+                        {[1, 2, 3, 4, 5, 6, 7, 8].map((l) => (
+                            <button
+                                key={l}
+                                onClick={() => onSkipLevel(l)}
+                                className="px-2 py-1 text-[10px] bg-red-100 hover:bg-red-200 dark:bg-red-900/30 dark:hover:bg-red-800/50 rounded text-red-700 dark:text-red-300 transition-colors font-mono"
+                                title={`Skip to Level ${l}`}
+                            >
+                                L{l}
+                            </button>
+                        ))}
+                    </div>
+                )}
             </div>
         </div>
     );

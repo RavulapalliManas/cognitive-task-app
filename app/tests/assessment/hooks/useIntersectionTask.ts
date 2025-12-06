@@ -29,17 +29,33 @@ export function useIntersectionTask() {
         // Reusing state logic safely
     }, []);
 
-    const submitIntersection = useCallback(async (detectionTimeMs: number, actualTimeMs: number, threshold: number) => {
+    const submitIntersection = useCallback(async (
+        detectionTimeMs: number,
+        actualTimeMs: number,
+        threshold: number,
+        drawnPath?: any[],
+        actualIntersection?: any[]
+    ) => {
         if (!polygonA || !polygonB) return null;
 
-        const result = await gradeLevel6({
+        const payload: any = {
             detection_time_ms: detectionTimeMs,
-            actual_intersection_time_ms: actualTimeMs,
-            threshold_percentage: threshold
-        });
+            threshold_percentage: threshold,
+            actual_intersection_time_ms: actualTimeMs
+        };
 
+        if (drawnPath && actualIntersection) {
+            payload.user_drawn_polygon = drawnPath;
+            payload.actual_intersection_polygon = actualIntersection;
+        } else {
+            // Detection Mode defaults
+            payload.estimated_area = intersectionArea; // Using state
+            payload.actual_area = 0; // Backend handles if 0 or we can compute
+        }
+
+        const result = await gradeLevel6(payload);
         return result;
-    }, [polygonA, polygonB]);
+    }, [polygonA, polygonB, intersectionArea]);
 
     return {
         polygonA,

@@ -1,17 +1,19 @@
 "use client";
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { isLoggedIn } from "@/lib/userAuth";
 import AssessmentCanvas from "./canvas";
 import RecognitionCanvas from "./RecognitionCanvas";
 import IntersectionCanvas from "./IntersectionCanvas";
 import ReconstructionCanvas from "./ReconstructionCanvas";
+import NavigationCanvas from "./NavigationCanvas";
+import MazeCanvas from "./MazeCanvas";
 import { useAssessment } from "./useassessment";
 import { Button, Card, Progress } from "@heroui/react";
 import { motion, AnimatePresence } from "framer-motion";
 import AssessmentHUD from "@/app/components/AssessmentHUD";
 
-type TestPhase = "intro" | "countdown" | "testing" | "completed";
+type TestPhase = "intro" | "countdown" | "testing" | "processing" | "completed";
 type LevelTimeData = {
     startTime: number;
     endTime: number | null;
@@ -34,23 +36,42 @@ export default function AssessmentPage() {
         startLevel6, polygonA, polygonB, intersectionThreshold, animationDuration,
         recordIntersectionDetection, submitIntersection,
 
-        startLevel7, targetPolygon, displayTimeMs, submitReconstruction
+        // Level 7
+        startLevel7, targetPolygon, displayTimeMs, submitReconstruction,
+        mazeLeftWall, mazeRightWall,
+
+        // Navigation
+        startLevel8, leftWall, rightWall, startPoint, endPoint, submitNavigation,
+
+        kineticRef,
+        hiddenIndices // Added
     } = useAssessment();
 
     const [phase, setPhase] = useState<TestPhase>("intro");
     const [countdown, setCountdown] = useState(2);
     const [showLevelTransition, setShowLevelTransition] = useState(false);
     const [showSublevelTransition, setShowSublevelTransition] = useState(false);
+
+    // UI State for transitions
     const [nextLevelInfo, setNextLevelInfo] = useState<{ level: number, sublevel: number, type: string } | null>(null);
+
+    // Logic State for transition targets (Ref is safer than state for logic)
+    const nextLevelTargetRef = useRef<{ level: number, sublevel: number } | null>(null);
+
     const [globalStartTime, setGlobalStartTime] = useState<number | null>(null);
     const [globalElapsedTime, setGlobalElapsedTime] = useState(0);
     const [levelTimes, setLevelTimes] = useState<Record<string, LevelTimeData>>({});
     const [currentLevelStartTime, setCurrentLevelStartTime] = useState<number | null>(null);
     const [currentLevelElapsedTime, setCurrentLevelElapsedTime] = useState(0);
 
+    // Results Queue
+    const resultsQueue = useRef<any[]>([]);
+    const [processingProgress, setProcessingProgress] = useState(0);
+
     // Prevent duplicate requests
     const isLoadingRef = useRef(false);
     const currentLevelRef = useRef<{ level: number, sublevel: number } | null>(null);
+    const isTransitioningRef = useRef(false);
 
     // Check authentication
     useEffect(() => {
@@ -59,25 +80,79 @@ export default function AssessmentPage() {
         }
     }, [router]);
 
-    // Global time tracking (updates every 100ms)
-    useEffect(() => {
-        if (globalStartTime && phase === "testing") {
-            const interval = setInterval(() => {
-                setGlobalElapsedTime(Date.now() - globalStartTime);
-            }, 100);
-            return () => clearInterval(interval);
-        }
-    }, [globalStartTime, phase]);
+    // Pause State
+    const [isPaused, setIsPaused] = useState(false);
 
-    // Current level time tracking (pause during transitions)
-    useEffect(() => {
-        if (currentLevelStartTime && phase === "testing") {
-            const interval = setInterval(() => {
-                setCurrentLevelElapsedTime(Date.now() - currentLevelStartTime);
-            }, 100);
-            return () => clearInterval(interval);
+    // Audio Logic
+    const audioCtxRef = useRef<AudioContext | null>(null);
+
+    const getAudioContext = () => {
+        if (!audioCtxRef.current) {
+            audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
         }
-    }, [currentLevelStartTime, phase]);
+        if (audioCtxRef.current.state === 'suspended') {
+            audioCtxRef.current.resume();
+        }
+        return audioCtxRef.current;
+    };
+
+    const playSuccess = () => {
+        const ctx = getAudioContext();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(880, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(1760, ctx.currentTime + 0.1);
+        gain.gain.setValueAtTime(0.1, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.3);
+    };
+
+    const playError = () => {
+        const ctx = getAudioContext();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = "sawtooth";
+        osc.frequency.setValueAtTime(150, ctx.currentTime);
+        gain.gain.setValueAtTime(0.1, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.3);
+    };
+
+    const prevSubmissionsLen = useRef(0);
+    const prevMistakes = useRef(0);
+
+    useEffect(() => {
+        if (!submissions || (mistakes === undefined)) return;
+        if (submissions.length > prevSubmissionsLen.current) {
+            playSuccess();
+        }
+        prevSubmissionsLen.current = submissions.length;
+        if (mistakes > prevMistakes.current) {
+            playError();
+        }
+        prevMistakes.current = mistakes;
+    }, [submissions, mistakes]);
+
+    // Timer Logic
+    useEffect(() => {
+        if (isPaused) return;
+        const interval = setInterval(() => {
+            if (globalStartTime) {
+                setGlobalElapsedTime(Date.now() - globalStartTime);
+            }
+            if (currentLevelStartTime) {
+                setCurrentLevelElapsedTime(Date.now() - currentLevelStartTime);
+            }
+        }, 100);
+        return () => clearInterval(interval);
+    }, [globalStartTime, currentLevelStartTime, isPaused]);
 
     const formatTime = (ms: number) => {
         const seconds = Math.floor(ms / 1000);
@@ -87,89 +162,121 @@ export default function AssessmentPage() {
         return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}.${milliseconds.toString().padStart(2, "0")}`;
     };
 
-    const getTestType = (level: number): "basic" | "memory" | "attention" | "combined" | "recognition" | "intersection" | "reconstruction" => {
-        if (level === 1) return "basic";
-        if (level === 2) return "memory";
-        if (level === 3) return "attention";
-        if (level === 4) return "combined"; // Combined: memory + attention
-        if (level === 5) return "recognition";
-        if (level === 6) return "intersection";
-        if (level === 7) return "reconstruction";
-        return "basic";
-    };
-
-    const getLevelName = (level: number): string => {
-        if (level === 1) return "Basic Test";
-        if (level === 2) return "Memory Test";
-        if (level === 3) return "Attention Test";
-        if (level === 4) return "Combined Test";
-        if (level === 5) return "Shape Recognition";
-        if (level === 6) return "Intersection Detection";
-        if (level === 7) return "Memory Reconstruction";
-        return "Test";
+    const getLevelName = (level: number) => {
+        switch (level) {
+            case 1: return "Focused Attention";
+            case 2: return "Visuospatial Memory";
+            case 3: return "Sustained Attention";
+            case 4: return "Shape Recognition";
+            case 5: return "Intersection";
+            case 6: return "Intersection Drawing";
+            case 7: return "Maze Tracing";
+            case 8: return "Navigation";
+            default: return "Unknown";
+        }
     };
 
     const startLevel = useCallback(async (level: number, sublevel: number) => {
-        // Prevent duplicate requests
-        if (isLoadingRef.current) {
-            console.log('[BLOCKED] Already loading, ignoring duplicate request');
-            return;
-        }
+        if (isLoadingRef.current) return;
+        if (currentLevelRef.current?.level === level && currentLevelRef.current?.sublevel === sublevel) return;
 
-        // Check if we're already on this level
-        if (currentLevelRef.current?.level === level && currentLevelRef.current?.sublevel === sublevel) {
-            console.log('[BLOCKED] Already on this level, ignoring duplicate');
-            return;
-        }
-
-        console.log(`[START LEVEL] Level ${level}, Sublevel ${sublevel}`);
         isLoadingRef.current = true;
         currentLevelRef.current = { level, sublevel };
 
         try {
             setPhase("testing");
             setCurrentLevelStartTime(Date.now());
-            const type = getTestType(level);
 
-            // Route to appropriate start function based on level
-            if (level <= 4) {
-                // We know level <= 4 implies a base TestType
-                await start(level, sublevel, type as any);
-            } else if (level === 5) {
-                await startLevel5(level, sublevel);
-            } else if (level === 6) {
-                await startLevel6(level, sublevel);
-            } else if (level === 7) {
-                await startLevel7(level, sublevel);
-            }
+            // LOGIC MAPPING: UI Level -> Backend Level
+            if (level === 1) await start(1, sublevel, "basic");
+            else if (level === 2) await start(2, sublevel, "memory");
+            else if (level === 3) await start(3, sublevel, "attention");
+            else if (level === 4) await startLevel5(4, sublevel);
+            else if (level === 5) await startLevel6(5, sublevel);
+            else if (level === 6) await startLevel7(6, sublevel);
+            else if (level === 7) await startLevel8(7, sublevel);
+            else await start(level, sublevel, "basic");
+
+        } catch (error) {
+            console.error("Error starting level:", error);
         } finally {
             isLoadingRef.current = false;
         }
-    }, [start, startLevel5, startLevel6, startLevel7]);
+    }, [start, startLevel5, startLevel6, startLevel7, startLevel8]);
 
-    // Countdown timer
+    // Countdown Logic - Now uses nextLevelTargetRef for reliable logic flow
     useEffect(() => {
         if (phase === "countdown" && countdown > 0) {
             const timer = setTimeout(() => {
-                setCountdown(countdown - 1);
+                setCountdown(prev => prev - 1);
             }, 1000);
             return () => clearTimeout(timer);
         } else if (phase === "countdown" && countdown === 0) {
-            // Start appropriate level/sublevel after countdown
             if (!globalStartTime) {
-                // First level, first sublevel
                 setGlobalStartTime(Date.now());
                 startLevel(1, 1);
+            } else if (nextLevelTargetRef.current) {
+                // Use Ref for logic source of truth
+                startLevel(nextLevelTargetRef.current.level, nextLevelTargetRef.current.sublevel);
+                nextLevelTargetRef.current = null;
             } else if (nextLevelInfo) {
-                // Next level/sublevel
+                // Fallback for initial load or edge cases
                 startLevel(nextLevelInfo.level, nextLevelInfo.sublevel);
-                setNextLevelInfo(null);
             }
         }
-    }, [phase, countdown, globalStartTime, nextLevelInfo, startLevel]);
+    }, [phase, countdown, globalStartTime, startLevel]);
+    // Depend only on stable refs/state. nextLevelInfo in deps is okay but ref is preferred logic path check in effect body.
+
+    // Transition Cleanup Effects
+    useEffect(() => {
+        if (showLevelTransition) {
+            const timer = setTimeout(() => {
+                setShowLevelTransition(false);
+                isLoadingRef.current = false;
+                currentLevelRef.current = null; // Unlock for next level
+                setPhase("countdown");
+                setCountdown(2);
+                isTransitioningRef.current = false;
+            }, 2000);
+            return () => clearTimeout(timer);
+        }
+    }, [showLevelTransition]);
+
+    useEffect(() => {
+        if (showSublevelTransition) {
+            const timer = setTimeout(() => {
+                setShowSublevelTransition(false);
+                isLoadingRef.current = false;
+                currentLevelRef.current = null; // Unlock for next sublevel
+                setPhase("countdown");
+                setCountdown(2);
+                isTransitioningRef.current = false;
+            }, 1500);
+            return () => clearTimeout(timer);
+        }
+    }, [showSublevelTransition]);
+
+    const processAndSaveResults = async () => {
+        setPhase("processing");
+
+        const steps = ["Normalizing Data...", "Computing Digital Biomarkers...", "Generating Cognitive Profile...", "Finalizing Report..."];
+        for (let i = 0; i < steps.length; i++) {
+            setProcessingProgress(((i + 1) / steps.length) * 100);
+            await new Promise(r => setTimeout(r, 600)); // Simulate work
+        }
+
+        try {
+            const currentHistory = JSON.parse(localStorage.getItem("assessment_results") || "[]");
+            const updatedHistory = [...currentHistory, ...resultsQueue.current];
+            localStorage.setItem("assessment_results", JSON.stringify(updatedHistory));
+        } catch (e) {
+            console.error("Batch save failed", e);
+        }
+
+        setPhase("completed");
+    };
 
     const handleFinish = useCallback(async () => {
-        // Record final level time
         if (currentLevelStartTime) {
             const endTime = Date.now();
             const key = `${currentLevel}-${currentSublevel}`;
@@ -184,117 +291,99 @@ export default function AssessmentPage() {
         }
 
         const result = await finish();
-        setPhase("completed");
-        console.log("Assessment result:", result);
-        console.log("Level times:", levelTimes);
-        console.log("Total time:", globalElapsedTime);
-    }, [currentLevel, currentSublevel, currentLevelStartTime, finish, setLevelTimes, setPhase, levelTimes, globalElapsedTime]);
+        if (result) {
+            resultsQueue.current.push({
+                ...result,
+                level: currentLevel,
+                sublevel: currentSublevel,
+                timestamp: Date.now()
+            });
+        }
+        await processAndSaveResults();
+    }, [currentLevel, currentSublevel, currentLevelStartTime, finish, setLevelTimes]);
 
     const handleNextLevel = useCallback(async () => {
-        // Record current sublevel time
-        if (currentLevelStartTime) {
-            const endTime = Date.now();
-            const key = `${currentLevel}-${currentSublevel}`;
-            setLevelTimes(prev => ({
-                ...prev,
-                [key]: {
-                    startTime: currentLevelStartTime,
-                    endTime,
-                    duration: endTime - currentLevelStartTime,
-                }
-            }));
-        }
+        if (isTransitioningRef.current) return;
+        isTransitioningRef.current = true;
 
         const nextSublevel = currentSublevel + 1;
         const nextLevel = currentLevel;
 
-        // Check if we need to advance to next level or next sublevel
+        let target = { level: currentLevel, sublevel: currentSublevel };
+
         if (nextSublevel > SUBLEVELS_PER_LEVEL) {
-            // Move to next level
             if (currentLevel >= MAX_LEVELS) {
-                // Assessment complete
                 handleFinish();
+                isTransitioningRef.current = false;
                 return;
             }
-
+            // Next Level
             const newLevel = currentLevel + 1;
+            target = { level: newLevel, sublevel: 1 };
+
             setNextLevelInfo({
                 level: newLevel,
                 sublevel: 1,
                 type: getLevelName(newLevel)
             });
+            nextLevelTargetRef.current = target;
             setShowLevelTransition(true);
-            setTimeout(() => {
-                setShowLevelTransition(false);
-                // Reset loading state for next level
-                isLoadingRef.current = false;
-                currentLevelRef.current = null;
-                setPhase("countdown");
-                setCountdown(2);
-            }, 2000); // Faster transition
         } else {
-            // Move to next sublevel
+            // Next Sublevel
+            target = { level: nextLevel, sublevel: nextSublevel };
+
             setNextLevelInfo({
                 level: nextLevel,
                 sublevel: nextSublevel,
                 type: `${getLevelName(nextLevel)} - Part ${nextSublevel}`
             });
+            nextLevelTargetRef.current = target;
             setShowSublevelTransition(true);
-            setTimeout(() => {
-                setShowSublevelTransition(false);
-                // Reset loading state for next sublevel
-                isLoadingRef.current = false;
-                currentLevelRef.current = null;
-                setPhase("countdown");
-                setCountdown(2);
-            }, 1500); // Faster sublevel transition
         }
-    }, [currentLevel, currentSublevel, currentLevelStartTime, setLevelTimes, setNextLevelInfo, setShowLevelTransition, setShowSublevelTransition, setPhase, setCountdown, handleFinish]);
+    }, [currentLevel, currentSublevel, setNextLevelInfo, setShowLevelTransition, setShowSublevelTransition, handleFinish]);
 
-    const handleBeginAssessment = () => {
-        // Reset loading state when starting new assessment
-        isLoadingRef.current = false;
-        currentLevelRef.current = null;
-        setPhase("countdown");
-        setCountdown(2);
-    };
-
-    // Check if current level/sublevel is complete (for manual next button)
-    const isLevelComplete = currentLevel <= 4 && trueOrder && submissions && submissions.length > 0 && submissions.length === trueOrder.length;
-
-    const progress = (submissions && trueOrder) ? (submissions.length / (trueOrder.length || 1) * 100) : 0;
-
-    const handleLevelComplete = useCallback((result: any) => {
-        // You might want to log the result or show a specific success message here
+    const handleLevelComplete = useCallback((result: any = null) => {
+        if (result) {
+            resultsQueue.current.push({
+                ...result,
+                level: currentLevel,
+                sublevel: currentSublevel,
+                timestamp: Date.now()
+            });
+        }
         handleNextLevel();
-    }, [handleNextLevel]);
+    }, [handleNextLevel, currentLevel, currentSublevel]);
 
-    // Auto-advance for Levels 1-4 (Tracing Tasks)
+    // Auto-advance Logic (for simple connect tasks)
     const hasSubmittedRef = useRef(false);
-
-    // Reset submission guard when level/sublevel changes
-    useEffect(() => {
-        hasSubmittedRef.current = false;
-    }, [currentLevel, currentSublevel]);
+    useEffect(() => { hasSubmittedRef.current = false; }, [currentLevel, currentSublevel]);
 
     useEffect(() => {
         if (currentLevel <= 4 && trueOrder && submissions && trueOrder.length > 0) {
             const isComplete = submissions.length === trueOrder.length;
-
             if (isComplete && !hasSubmittedRef.current) {
                 hasSubmittedRef.current = true;
                 const submitAndAdvance = async () => {
-                    // Small delay to show the final connection
                     await new Promise(resolve => setTimeout(resolve, 500));
                     const result = await finish();
-                    if (result) {
-                        handleLevelComplete(result);
-                    }
+                    if (result) handleLevelComplete(result);
                 };
                 submitAndAdvance();
             }
         }
     }, [currentLevel, trueOrder, submissions, finish, handleLevelComplete]);
+
+    const memoryMode = useMemo(() => ({
+        enabled: currentLevel === 2,
+        sublevel: currentSublevel
+    }), [currentLevel, currentSublevel]);
+
+    const handleBeginAssessment = () => {
+        isLoadingRef.current = false;
+        currentLevelRef.current = null;
+        setPhase("countdown");
+        setCountdown(2);
+    };
 
     return (
         <div className="min-h-screen bg-gray-50 dark:from-gray-900">
@@ -305,15 +394,14 @@ export default function AssessmentPage() {
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
-                        className="fixed inset-0 z-[100] bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center"
+                        className="fixed inset-0 z-[100] bg-gradient-to-br from-blue-500 to-purple-600 flex flex-col items-center justify-center p-4"
                     >
                         <motion.div
                             initial={{ scale: 0.8, opacity: 0 }}
                             animate={{ scale: 1, opacity: 1 }}
                             transition={{ duration: 0.5 }}
-                            className="text-center"
+                            className="text-center flex flex-col items-center"
                         >
-                            <div className="text-white text-8xl mb-6">✅</div>
                             <h2 className="text-white text-6xl font-black mb-4">Level {nextLevelInfo.level - 1} Complete!</h2>
                             <p className="text-white text-3xl font-medium">Get ready for Level {nextLevelInfo.level}</p>
                             <p className="text-white/80 text-2xl mt-2 capitalize">{getLevelName(nextLevelInfo.level)}</p>
@@ -337,10 +425,34 @@ export default function AssessmentPage() {
                             transition={{ duration: 0.3 }}
                             className="text-center"
                         >
-                            <div className="text-white text-7xl mb-4">🎯</div>
+                            {/* Animated Icons REMOVED as per user request */}
                             <h2 className="text-white text-5xl font-black mb-3">Part {nextLevelInfo.sublevel - 1} Complete!</h2>
                             <p className="text-white text-2xl font-medium">Next: Part {nextLevelInfo.sublevel}</p>
                         </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            {/* Processing Overlay */}
+            <AnimatePresence>
+                {phase === "processing" && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-[100] bg-white dark:bg-gray-900 flex flex-col items-center justify-center p-8"
+                    >
+                        <div className="w-full max-w-lg text-center">
+                            <h2 className="text-3xl font-bold mb-8 text-gray-800 dark:text-gray-100">Analyzing Cognitive Performance</h2>
+                            <Progress
+                                size="lg"
+                                color="primary"
+                                value={processingProgress}
+                                showValueLabel={true}
+                                className="mb-4"
+                            />
+                            <p className="text-gray-500 animate-pulse">Computing advanced geometric metrics...</p>
+                        </div>
                     </motion.div>
                 )}
             </AnimatePresence>
@@ -352,7 +464,7 @@ export default function AssessmentPage() {
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
-                        className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-center justify-center"
+                        className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-md flex flex-col items-center justify-center text-center p-8"
                     >
                         <motion.div
                             key={countdown}
@@ -360,15 +472,35 @@ export default function AssessmentPage() {
                             animate={{ scale: 1, opacity: 1 }}
                             exit={{ scale: 1.5, opacity: 0 }}
                             transition={{ duration: 0.5 }}
-                            className="text-white text-[20rem] font-black"
+                            className="text-white text-[15rem] font-black leading-none mb-8"
                         >
                             {countdown > 0 ? countdown : "GO!"}
+                        </motion.div>
+
+                        <motion.div
+                            initial={{ opacity: 0, y: 20 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ delay: 0.2 }}
+                            className="max-w-xl mx-auto"
+                        >
+                            <h3 className="text-4xl text-blue-400 font-bold mb-4">
+                                {nextLevelInfo ? getLevelName(nextLevelInfo.level) : getLevelName(currentLevel)}
+                            </h3>
+                            <p className="text-2xl text-gray-300 font-medium leading-relaxed px-12">
+                                {currentLevel === 1 && "Connect the points in numerical order: 1 ➞ 2 ➞ 3..."}
+                                {currentLevel === 2 && "Memory Test: 50% of numbers are hidden. Watch for yellow flashes to reveal the next target!"}
+                                {currentLevel === 3 && "Attention Test: Points are drifting! Track the moving targets and click them in order."}
+                                {currentLevel === 4 && "Combined Test: Points are drifting AND hidden. Focus hard to track the correct sequence!"}
+                                {currentLevel === 5 && "Shape Recognition: Analyze the point cloud and identify the object."}
+                                {currentLevel === 6 && "Intersection Drawing: Freeze the shapes and draw the overlapping region!"}
+                                {currentLevel === 7 && "Maze Tracing: Trace the path through the maze without touching the walls."}
+                            </p>
                         </motion.div>
                     </motion.div>
                 )}
             </AnimatePresence>
 
-            {/* HUD - Always visible during test */}
+            {/* HUD */}
             <AnimatePresence>
                 {phase === "testing" && (
                     <motion.div
@@ -384,21 +516,29 @@ export default function AssessmentPage() {
                             levelName={getLevelName(currentLevel)}
                             currentLevelElapsedTime={currentLevelElapsedTime}
                             globalElapsedTime={globalElapsedTime}
-                            progress={progress}
+                            progress={(submissions && trueOrder) ? (submissions.length / (trueOrder.length || 1) * 100) : 0}
                             submissionsCount={submissions?.length || 0}
                             totalTargets={trueOrder?.length || 0}
                             mistakes={mistakes}
-                            showUndo={currentLevel <= 4}
+                            showUndo={currentLevel < 5}
                             onUndo={undoLastClick}
                             formatTime={formatTime}
+                            isPaused={isPaused}
+                            onTogglePause={() => setIsPaused(!isPaused)}
+                            onSkipLevel={(level) => {
+                                // Admin Skip: Force jump
+                                isLoadingRef.current = false;
+                                currentLevelRef.current = null;
+                                nextLevelTargetRef.current = { level, sublevel: 1 };
+                                startLevel(level, 1);
+                            }}
                         />
                     </motion.div>
                 )}
             </AnimatePresence>
 
             {/* Main Content */}
-            <div className={`${phase !== "intro" && phase !== "completed" && phase !== "countdown" && !showLevelTransition ? "pt-32" : ""} px-6 py-8`}>
-                {/* Intro Screen */}
+            <div className={`${phase !== "intro" && phase !== "completed" && phase !== "countdown" && phase !== "processing" && !showLevelTransition ? "pt-32" : ""} px-6 py-8`}>
                 {phase === "intro" && (
                     <motion.div
                         initial={{ opacity: 0 }}
@@ -407,88 +547,24 @@ export default function AssessmentPage() {
                     >
                         <Card className="p-16 bg-white dark:bg-gray-800 shadow-2xl rounded-3xl">
                             <div className="text-center mb-12">
-                                <div className="text-8xl mb-6">🧠</div>
-                                <h1 className="text-7xl font-black mb-6 text-gray-900 dark:text-white">
-                                    Cognitive Assessment
-                                </h1>
-                                <p className="text-3xl text-gray-700 dark:text-gray-300 font-medium leading-relaxed">
-                                    Complete 4 levels with 5 parts each<br />
-                                    Take your time and do your best!
+                                <h1 className="text-7xl font-black mb-6 text-gray-900 dark:text-white">Cognitive Assessment</h1>
+                                <p className="text-2xl text-gray-700 dark:text-gray-300 font-medium leading-relaxed mb-8">
+                                    Complete 7 levels to analyze your cognitive performance.
                                 </p>
-                            </div>
-
-                            <div className="space-y-6 mb-12">
-                                <div className="p-6 bg-blue-100 dark:bg-blue-900/40 rounded-3xl border-4 border-blue-500">
-                                    <div className="flex items-center gap-4 mb-3">
-                                        <div className="text-5xl">1️⃣</div>
-                                        <h3 className="text-3xl font-black text-blue-700 dark:text-blue-300">Level 1: Basic Test</h3>
+                                <div className="grid grid-cols-2 gap-4 text-left max-w-3xl mx-auto bg-gray-50 dark:bg-gray-900/50 p-6 rounded-2xl">
+                                    <div className="space-y-2">
+                                        <div className="flex items-center"><span className="w-6 h-6 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-sm font-bold mr-3">1</span> Path Integration</div>
+                                        <div className="flex items-center"><span className="w-6 h-6 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-sm font-bold mr-3">2</span> Visuospatial Memory</div>
+                                        <div className="flex items-center"><span className="w-6 h-6 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-sm font-bold mr-3">3</span> Sustained Attention</div>
+                                        <div className="flex items-center"><span className="w-6 h-6 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-sm font-bold mr-3">4</span> Dual Task</div>
                                     </div>
-                                    <p className="text-xl text-gray-800 dark:text-gray-200 leading-relaxed font-medium">
-                                        Click numbered dots in order. 5 parts with increasing complexity.
-                                    </p>
-                                </div>
-
-                                <div className="p-6 bg-purple-100 dark:bg-purple-900/40 rounded-3xl border-4 border-purple-500">
-                                    <div className="flex items-center gap-4 mb-3">
-                                        <div className="text-5xl">2️⃣</div>
-                                        <h3 className="text-3xl font-black text-purple-700 dark:text-purple-300">Level 2: Memory Test</h3>
+                                    <div className="space-y-2">
+                                        <div className="flex items-center"><span className="w-6 h-6 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center text-sm font-bold mr-3">5</span> Shape Recognition</div>
+                                        <div className="flex items-center"><span className="w-6 h-6 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center text-sm font-bold mr-3">6</span> Intersection Drawing</div>
+                                        <div className="flex items-center"><span className="w-6 h-6 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center text-sm font-bold mr-3">7</span> Maze Tracing</div>
                                     </div>
-                                    <p className="text-xl text-gray-800 dark:text-gray-200 leading-relaxed font-medium">
-                                        Some numbers hidden. Watch yellow flashing dots to remember!
-                                    </p>
-                                </div>
-
-                                <div className="p-6 bg-green-100 dark:bg-green-900/40 rounded-3xl border-4 border-green-500">
-                                    <div className="flex items-center gap-4 mb-3">
-                                        <div className="text-5xl">3️⃣</div>
-                                        <h3 className="text-3xl font-black text-green-700 dark:text-green-300">Level 3: Attention Test</h3>
-                                    </div>
-                                    <p className="text-xl text-gray-800 dark:text-gray-200 leading-relaxed font-medium">
-                                        Dots drift around! Stay focused on moving targets.
-                                    </p>
-                                </div>
-
-                                <div className="p-6 bg-orange-100 dark:bg-orange-900/40 rounded-3xl border-4 border-orange-500">
-                                    <div className="flex items-center gap-4 mb-3">
-                                        <div className="text-5xl">4️⃣</div>
-                                        <h3 className="text-3xl font-black text-orange-700 dark:text-orange-300">Level 4: Combined Test</h3>
-                                    </div>
-                                    <p className="text-xl text-gray-800 dark:text-gray-200 leading-relaxed font-medium">
-                                        Memory + Attention together! Hidden numbers AND drifting dots.
-                                    </p>
-                                </div>
-
-                                <div className="p-6 bg-pink-100 dark:bg-pink-900/40 rounded-3xl border-4 border-pink-500">
-                                    <div className="flex items-center gap-4 mb-3">
-                                        <div className="text-5xl">5️⃣</div>
-                                        <h3 className="text-3xl font-black text-pink-700 dark:text-pink-300">Level 5: Shape Recognition</h3>
-                                    </div>
-                                    <p className="text-xl text-gray-800 dark:text-gray-200 leading-relaxed font-medium">
-                                        Identify shapes from point clouds. Rate your confidence!
-                                    </p>
-                                </div>
-
-                                <div className="p-6 bg-cyan-100 dark:bg-cyan-900/40 rounded-3xl border-4 border-cyan-500">
-                                    <div className="flex items-center gap-4 mb-3">
-                                        <div className="text-5xl">6️⃣</div>
-                                        <h3 className="text-3xl font-black text-cyan-700 dark:text-cyan-300">Level 6: Intersection Detection</h3>
-                                    </div>
-                                    <p className="text-xl text-gray-800 dark:text-gray-200 leading-relaxed font-medium">
-                                        Watch moving polygons and detect when they overlap!
-                                    </p>
-                                </div>
-
-                                <div className="p-6 bg-rose-100 dark:bg-rose-900/40 rounded-3xl border-4 border-rose-500">
-                                    <div className="flex items-center gap-4 mb-3">
-                                        <div className="text-5xl">7️⃣</div>
-                                        <h3 className="text-3xl font-black text-rose-700 dark:text-rose-300">Level 7: Memory Reconstruction</h3>
-                                    </div>
-                                    <p className="text-xl text-gray-800 dark:text-gray-200 leading-relaxed font-medium">
-                                        Memorize a shape, then recreate it from memory!
-                                    </p>
                                 </div>
                             </div>
-
                             <Button
                                 color="primary"
                                 size="lg"
@@ -498,49 +574,63 @@ export default function AssessmentPage() {
                             >
                                 Start Assessment
                             </Button>
-
-                            <p className="text-center text-2xl text-gray-600 dark:text-gray-400 mt-8 font-medium">
-                                ℹ️ 7 Levels × 3 Parts = 21 Total Tests • The test will begin after a 3-second countdown
-                            </p>
                         </Card>
                     </motion.div>
                 )}
 
-                {/* Test Canvas */}
-                {phase !== "intro" && phase !== "completed" && phase !== "countdown" && (
-                    <motion.div
-                        initial={{ opacity: 0, scale: 0.95 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        className="max-w-7xl mx-auto"
-                    >
+                {phase === "testing" && (
+                    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-7xl mx-auto">
                         <Card className="p-8 bg-white dark:bg-gray-800 shadow-2xl">
-                            {/* Levels 1-4: Original polygon tracing */}
-                            {currentLevel <= 4 && (
+                            {(currentLevel === 1 || currentLevel === 2 || currentLevel === 3 || currentLevel === 4) && points && (
                                 <AssessmentCanvas
-                                    key={`canvas-${currentLevel}-${currentSublevel}`}
                                     points={points}
-                                    onClickPoint={recordClick}
-                                    testType={testType as any}
-                                    driftParameters={driftParameters}
-                                    highlightSchedule={highlightSchedule}
-                                    startTime={startTime}
-                                    submissions={submissions}
-                                    trueOrder={trueOrder}
+                                    onClickPoint={(idx) => recordClick(idx)}
+                                    testType={
+                                        currentLevel === 1 ? "basic" :
+                                            currentLevel === 2 ? "memory" :
+                                                currentLevel === 3 ? "attention" : "combined"
+                                    }
+                                    memoryMode={memoryMode}
+                                    driftParameters={driftParameters || undefined}
+                                    highlightSchedule={highlightSchedule || undefined}
+                                    hiddenIndices={hiddenIndices} // Added prop
+                                    startTime={currentLevelStartTime}
+                                    submissions={submissions || []}
+                                    trueOrder={trueOrder || []}
                                     mistakes={mistakes}
+                                    kineticDataRef={currentLevel === 3 ? kineticRef : undefined}
+                                    isPaused={isPaused}
+                                />
+                            )}
+                            {currentLevel === 5 && recognitionTask && (
+                                <RecognitionCanvas
+                                    shapes={recognitionTask.shapes}
+                                    timeLimitSeconds={30}
+                                    startTime={currentLevelStartTime}
+                                    targetImageUrl={recognitionTask.target_image_url}
+                                    onSubmit={async (idx, conf) => {
+                                        if (!currentLevelStartTime) return;
+                                        const result = await submitRecognition(currentLevelStartTime, idx, conf);
+                                        if (result) handleLevelComplete(result);
+                                    }}
                                 />
                             )}
 
-                            {currentLevel === 5 && recognitionTask && (
-                                <RecognitionCanvas
-                                    key={`recognition-${currentLevel}-${currentSublevel}`}
-                                    shapes={recognitionTask.shapes}
-                                    onSubmit={async (idx, conf) => {
-                                        if (!startTime) return;
-                                        const result = await submitRecognition(startTime, idx, conf);
+                            {currentLevel === 7 && targetPolygon && (
+                                <MazeCanvas
+                                    path={targetPolygon} // Reusing targetPolygon state for maze path
+                                    leftWall={mazeLeftWall}
+                                    rightWall={mazeRightWall}
+                                    timeLimitSeconds={15} // Direct tracing doesn't need huge time
+                                    onComplete={async (userPath, timestamps) => {
+                                        if (!currentLevelStartTime) return;
+                                        const result = await submitReconstruction(
+                                            userPath,
+                                            Date.now() - currentLevelStartTime,
+                                            timestamps
+                                        );
                                         if (result) handleLevelComplete(result);
                                     }}
-                                    timeLimitSeconds={30}
-                                    startTime={startTime}
                                 />
                             )}
 
@@ -551,15 +641,21 @@ export default function AssessmentPage() {
                                     polygonB={polygonB}
                                     thresholdPercentage={intersectionThreshold}
                                     animationDurationMs={animationDuration}
-                                    onDetection={async (detTime, actTime, area) => {
-                                        const result = await submitIntersection(detTime, actTime, intersectionThreshold);
+                                    startTime={currentLevelStartTime}
+                                    onSubmitDrawing={async (drawnPath, actualIntersection, detectionTime) => {
+                                        // Level 6 now expects drawn path
+                                        const result = await submitIntersection(
+                                            detectionTime,
+                                            0, // actual time not relevant for drawing mode
+                                            intersectionThreshold,
+                                            drawnPath,
+                                            actualIntersection
+                                        );
                                         if (result) handleLevelComplete(result);
                                     }}
-                                    startTime={startTime}
                                 />
                             )}
-
-                            {currentLevel === 7 && targetPolygon && targetPolygon.length > 0 && (
+                            {currentLevel === 7 && (
                                 <ReconstructionCanvas
                                     key={`reconstruction-${currentLevel}-${currentSublevel}`}
                                     targetPolygon={targetPolygon}
@@ -571,33 +667,51 @@ export default function AssessmentPage() {
                                     startTime={startTime}
                                 />
                             )}
+                            {currentLevel === 8 && (
+                                <NavigationCanvas
+                                    leftWall={leftWall}
+                                    rightWall={rightWall}
+                                    startPoint={startPoint}
+                                    endPoint={endPoint}
+                                    onComplete={(path, collisions) => {
+                                        const timeTaken = Date.now() - (startTime || 0);
+                                        submitNavigation(path, timeTaken, collisions).then(() => handleLevelComplete());
+                                    }}
+                                />
+                            )}
                         </Card>
                     </motion.div>
                 )}
 
-                {/* Completion Screen */}
                 {phase === "completed" && (
                     <motion.div
                         initial={{ opacity: 0, scale: 0.9 }}
                         animate={{ opacity: 1, scale: 1 }}
-                        className="max-w-4xl mx-auto"
+                        className="max-w-4xl mx-auto pt-32 px-6"
                     >
-                        <Card className="p-12 bg-white dark:bg-gray-800 shadow-2xl text-center">
-                            <div className="text-6xl mb-6">🎉</div>
-                            <h1 className="text-5xl font-bold mb-4 bg-gradient-to-r from-green-600 to-blue-600 bg-clip-text text-transparent">
-                                Assessment Complete!
-                            </h1>
-                            <p className="text-xl text-gray-600 dark:text-gray-300 mb-8">
-                                Great job! Your results are being processed.
-                            </p>
+                        <Card className="p-12 text-center bg-white dark:bg-gray-800 shadow-2xl rounded-3xl">
+                            <div className="flex justify-center mb-8"><div className="text-8xl">🎉</div></div>
+                            <h1 className="text-5xl font-black mb-6 text-gray-900 dark:text-white">Assessment Complete!</h1>
+                            <p className="text-2xl text-gray-600 dark:text-gray-300 mb-8">Your cognitive profile has been generated.</p>
+
+                            <div className="grid grid-cols-2 gap-6 mb-12 max-w-lg mx-auto">
+                                <div className="bg-gray-100 dark:bg-gray-700 p-6 rounded-2xl">
+                                    <div className="text-sm text-gray-500 uppercase font-bold mb-2">Total Time</div>
+                                    <div className="text-3xl font-mono font-bold text-blue-600">{formatTime(globalElapsedTime)}</div>
+                                </div>
+                                <div className="bg-gray-100 dark:bg-gray-700 p-6 rounded-2xl">
+                                    <div className="text-sm text-gray-500 uppercase font-bold mb-2">Tests Completed</div>
+                                    <div className="text-3xl font-mono font-bold text-green-600">{resultsQueue.current.length} / 21</div>
+                                </div>
+                            </div>
                             <Button
-                                color="primary"
                                 size="lg"
+                                color="success"
                                 variant="shadow"
-                                onClick={() => window.location.href = "/results"}
-                                className="text-xl py-6 px-12 font-bold rounded-2xl bg-blue-600 text-white hover:bg-blue-700"
+                                onClick={() => router.push("/results")}
+                                className="text-2xl py-8 px-12 font-bold rounded-2xl"
                             >
-                                View Results
+                                View Detailed Results ➔
                             </Button>
                         </Card>
                     </motion.div>

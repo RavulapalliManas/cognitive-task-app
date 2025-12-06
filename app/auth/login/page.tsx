@@ -1,89 +1,42 @@
 "use client";
 
-import { useState, FormEvent, useRef, KeyboardEvent } from "react";
-import { motion } from "framer-motion";
+import { useState, useEffect } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import { Card, CardBody, Button, Input } from "@heroui/react";
 import { useRouter } from "next/navigation";
 import Navbar from "@/app/components/Navbar";
 import Footer from "@/app/components/Footer";
-import { loginUser, getCurrentUser } from "@/lib/userAuth";
+import { loginUser, getUsers, User } from "@/lib/userAuth";
 
 export default function LoginPage() {
   const router = useRouter();
-  const [code, setCode] = useState(["", "", "", "", "", ""]);
+  const [users, setUsers] = useState<User[]>([]);
+  const [selectedUser, setSelectedUser] = useState<User | null>(null);
+  const [pin, setPin] = useState("");
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
-  const handleInputChange = (index: number, value: string) => {
-    if (value.length > 1) {
-      value = value[0];
-    }
+  useEffect(() => {
+    setUsers(getUsers());
+  }, []);
 
-    const newCode = [...code];
-    newCode[index] = value.toUpperCase();
-    setCode(newCode);
+  const handleUserClick = (user: User) => {
+    setSelectedUser(user);
+    setPin("");
     setError("");
-
-    if (value && index < 5) {
-      inputRefs.current[index + 1]?.focus();
-    }
   };
 
-  const handleKeyDown = (index: number, e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Backspace" && !code[index] && index > 0) {
-      inputRefs.current[index - 1]?.focus();
-    }
-  };
-
-  const handlePaste = (e: React.ClipboardEvent) => {
+  const handlePinSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const pastedData = e.clipboardData.getData("text").toUpperCase().slice(0, 6);
-    const newCode = [...code];
-    
-    for (let i = 0; i < pastedData.length && i < 6; i++) {
-      newCode[i] = pastedData[i];
-    }
-    
-    setCode(newCode);
-    setError("");
-    
-    const nextEmptyIndex = newCode.findIndex(c => !c);
-    if (nextEmptyIndex !== -1) {
-      inputRefs.current[nextEmptyIndex]?.focus();
+    if (!selectedUser) return;
+
+    if (pin === selectedUser.pin) {
+      setIsLoading(true);
+      await loginUser(selectedUser.id, pin);
+      router.push("/tests/assessment");
     } else {
-      inputRefs.current[5]?.focus();
-    }
-  };
-
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    
-    const enteredCode = code.join("");
-    
-    if (enteredCode.length !== 6) {
-      setError("Please enter all 6 characters");
-      return;
-    }
-
-    setIsLoading(true);
-    setError("");
-
-    try {
-      const user = await loginUser(enteredCode);
-
-      if (user) {
-        router.push("/tests/assessment");
-      } else {
-        setError("Invalid code. Please check and try again.");
-        setCode(["", "", "", "", "", ""]);
-        inputRefs.current[0]?.focus();
-        setIsLoading(false);
-      }
-    } catch (error) {
-      console.error("Login error:", error);
-      setError("Login failed. Please try again.");
-      setIsLoading(false);
+      setError("Incorrect PIN");
+      setPin("");
     }
   };
 
@@ -91,7 +44,7 @@ export default function LoginPage() {
     <>
       <Navbar />
       <div className="min-h-screen bg-gradient-to-br from-purple-50 via-pink-50 to-rose-50 dark:from-gray-900 dark:via-slate-900 dark:to-gray-900 px-6 pt-28 pb-20">
-        <div className="max-w-2xl mx-auto">
+        <div className="max-w-4xl mx-auto">
           <motion.div
             initial={{ opacity: 0, y: 30 }}
             animate={{ opacity: 1, y: 0 }}
@@ -100,122 +53,133 @@ export default function LoginPage() {
           >
             <div className="text-6xl mb-4">🔑</div>
             <h1 className="text-5xl font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent mb-4">
-              Welcome Back!
+              Who is taking the test?
             </h1>
-            <p className="text-lg text-gray-600 dark:text-gray-300">
-              Enter your 6-character access code to continue
-            </p>
           </motion.div>
 
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, delay: 0.2 }}
-          >
-            <Card className="rounded-3xl shadow-2xl bg-white dark:bg-gray-800">
-              <CardBody className="p-10">
-                <form onSubmit={handleSubmit} className="space-y-8">
-                  <div>
-                    <p className="text-center text-sm text-gray-600 dark:text-gray-400 mb-6">
-                      Access Code
-                    </p>
-                    <div className="flex justify-center gap-3" onPaste={handlePaste}>
-                      {code.map((digit, index) => (
-                        <input
-                          key={index}
-                          ref={(el) => { inputRefs.current[index] = el; }}
-                          type="text"
-                          maxLength={1}
-                          value={digit}
-                          onChange={(e) => handleInputChange(index, e.target.value)}
-                          onKeyDown={(e) => handleKeyDown(index, e)}
-                          className={`w-16 h-20 text-center text-3xl font-mono font-bold border-3 rounded-xl transition-all
-                            ${error 
-                              ? "border-red-500 bg-red-50 dark:bg-red-900/20" 
-                              : "border-gray-300 dark:border-gray-600 focus:border-purple-500 dark:focus:border-purple-400"
-                            }
-                            bg-white dark:bg-gray-700 text-gray-900 dark:text-white
-                            focus:outline-none focus:ring-4 focus:ring-purple-200 dark:focus:ring-purple-900/50
-                            uppercase
-                          `}
-                          autoFocus={index === 0}
-                        />
-                      ))}
-                    </div>
-                  </div>
-
-                  {error && (
-                    <motion.div
-                      initial={{ opacity: 0, y: -10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className="bg-red-50 dark:bg-red-900/20 border-2 border-red-300 dark:border-red-700 rounded-xl p-4"
-                    >
-                      <div className="flex items-center gap-3">
-                        <span className="text-2xl">❌</span>
-                        <p className="text-red-700 dark:text-red-400 font-medium">{error}</p>
-                      </div>
-                    </motion.div>
-                  )}
-
-                  <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl p-4">
-                    <div className="flex items-start gap-3">
-                      <span className="text-xl">💡</span>
-                      <div className="text-sm text-blue-800 dark:text-blue-300">
-                        <p className="font-medium mb-1">Tip:</p>
-                        <p>Your code is case-insensitive. You can paste it from your clipboard.</p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex gap-4 pt-4">
-                    <Button
-                      type="button"
-                      size="lg"
-                      variant="bordered"
-                      className="flex-1 py-6 text-lg font-bold border-2 text-gray-900 dark:text-white rounded-2xl"
-                      onClick={() => router.back()}
-                    >
-                      ← Back
-                    </Button>
-                    <Button
-                      type="submit"
-                      size="lg"
-                      className="flex-1 py-6 text-lg font-bold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-2xl"
-                      isLoading={isLoading}
-                      isDisabled={code.join("").length !== 6}
-                    >
-                      Login
-                    </Button>
-                  </div>
-                </form>
-
-                <div className="mt-8 pt-8 border-t border-gray-200 dark:border-gray-700">
-                  <p className="text-center text-gray-600 dark:text-gray-400 text-sm mb-3">
-                    Don't have a code yet?
-                  </p>
-                  <Button
-                    variant="light"
-                    size="lg"
-                    className="w-full text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 font-bold rounded-2xl"
-                    onClick={() => router.push("/auth/register")}
-                  >
-                    Register as New User →
+          {/* User Grid */}
+          {!selectedUser && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
+            >
+              {users.length === 0 ? (
+                <div className="col-span-full text-center py-12">
+                  <p className="text-xl text-gray-500 mb-6">No users found.</p>
+                  <Button color="primary" size="lg" onClick={() => router.push('/auth/register')}>
+                    Create First User
                   </Button>
                 </div>
-              </CardBody>
-            </Card>
-          </motion.div>
+              ) : (
+                users.map((user, i) => (
+                  <motion.div
+                    key={user.id}
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: i * 0.1 }}
+                  >
+                    <Card
+                      isPressable
+                      onPress={() => handleUserClick(user)}
+                      className="w-full hover:scale-105 transition-transform"
+                    >
+                      <CardBody className="p-8 flex flex-col items-center gap-4">
+                        <div className="w-20 h-20 rounded-full bg-gradient-to-tr from-blue-500 to-purple-500 flex items-center justify-center text-3xl font-bold text-white shadow-lg">
+                          {user.name.charAt(0).toUpperCase()}
+                        </div>
+                        <h3 className="text-2xl font-bold text-gray-800 dark:text-white">{user.name}</h3>
+                        <p className="text-gray-500 dark:text-gray-400">{user.country}</p>
+                      </CardBody>
+                    </Card>
+                  </motion.div>
+                ))
+              )}
+              {/* Add User Button */}
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: users.length * 0.1 }}
+              >
+                <Card
+                  isPressable
+                  onPress={() => router.push('/auth/register')}
+                  className="w-full h-full border-2 border-dashed border-gray-300 dark:border-gray-700 bg-transparent hover:bg-gray-50 dark:hover:bg-gray-800"
+                >
+                  <CardBody className="p-8 flex flex-col items-center justify-center gap-4 h-full min-h-[200px]">
+                    <div className="text-5xl text-gray-400">+</div>
+                    <h3 className="text-xl font-bold text-gray-500">New User</h3>
+                  </CardBody>
+                </Card>
+              </motion.div>
+            </motion.div>
+          )}
 
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.6, delay: 0.4 }}
-            className="mt-6 text-center"
-          >
-            <p className="text-gray-500 dark:text-gray-400 text-sm">
-              🔒 All authentication is handled locally on your device
-            </p>
-          </motion.div>
+          {/* PIN Entry Modal / View */}
+          <AnimatePresence>
+            {selectedUser && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.9 }}
+                className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+              >
+                <Card className="w-full max-w-md bg-white dark:bg-gray-900 shadow-2xl">
+                  <CardBody className="p-10 text-center">
+                    <div className="w-24 h-24 mx-auto mb-6 rounded-full bg-gradient-to-tr from-blue-500 to-purple-500 flex items-center justify-center text-4xl font-bold text-white shadow-lg">
+                      {selectedUser.name.charAt(0).toUpperCase()}
+                    </div>
+                    <h2 className="text-3xl font-bold mb-2">Hello, {selectedUser.name.split(' ')[0]}!</h2>
+                    <p className="text-gray-500 mb-8">Enter your 4-digit PIN to continue</p>
+
+                    <form onSubmit={handlePinSubmit}>
+                      <Input
+                        type="password"
+                        inputMode="numeric"
+                        autoFocus
+                        placeholder="****"
+                        maxLength={4}
+                        value={pin}
+                        onChange={(e) => {
+                          const val = e.target.value.replace(/[^0-9]/g, "").slice(0, 4);
+                          setPin(val);
+                          setError("");
+                        }}
+                        className="mb-6 text-center text-4xl font-mono tracking-[1em]"
+                        classNames={{
+                          input: "text-center text-4xl font-bold h-16",
+                          inputWrapper: "h-20"
+                        }}
+                      />
+                      {error && <p className="text-red-500 font-bold mb-4 animate-pulse">{error}</p>}
+
+                      <div className="flex gap-4">
+                        <Button
+                          size="lg"
+                          variant="flat"
+                          onPress={() => setSelectedUser(null)}
+                          className="flex-1"
+                        >
+                          Back
+                        </Button>
+                        <Button
+                          size="lg"
+                          color="primary"
+                          type="submit"
+                          isLoading={isLoading}
+                          isDisabled={pin.length !== 4}
+                          className="flex-1 font-bold"
+                        >
+                          Login
+                        </Button>
+                      </div>
+                    </form>
+                  </CardBody>
+                </Card>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
         </div>
       </div>
       <Footer />

@@ -7,7 +7,7 @@ import { motion } from "framer-motion";
 interface Shape {
     name: string;
     label: string;
-    points: Array<{x: number, y: number}>;
+    points: Array<{ x: number, y: number }>;
     is_target: boolean;
 }
 
@@ -22,33 +22,33 @@ export default function RecognitionCanvas({
     shapes,
     onSubmit,
     timeLimitSeconds,
-    startTime
-}: RecognitionCanvasProps) {
+    startTime,
+    targetImageUrl // Added prop
+}: RecognitionCanvasProps & { targetImageUrl?: string }) {
     const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
     const [confidence, setConfidence] = useState<number>(3);
     const [timeRemaining, setTimeRemaining] = useState(timeLimitSeconds);
     const [submitted, setSubmitted] = useState(false);
 
-    const SVG_WIDTH = 400;
-    const SVG_HEIGHT = 300;
+    const SVG_WIDTH = 300;
+    const SVG_HEIGHT = 200;
     const POINT_RADIUS = 3;
 
-    // Countdown timer
+    // Timer
     useEffect(() => {
-        if (startTime && !submitted) {
+        if (!submitted) {
             const interval = setInterval(() => {
-                const elapsed = (Date.now() - startTime) / 1000;
-                const remaining = Math.max(0, timeLimitSeconds - elapsed);
-                setTimeRemaining(remaining);
-
-                if (remaining === 0 && selectedIndex !== null) {
-                    handleSubmit();
-                }
+                setTimeRemaining(prev => {
+                    const next = Math.max(0, prev - 0.1);
+                    if (next === 0 && selectedIndex !== null) {
+                        handleSubmit();
+                    }
+                    return next;
+                });
             }, 100);
-
             return () => clearInterval(interval);
         }
-    }, [startTime, submitted, timeLimitSeconds, selectedIndex]);
+    }, [submitted, selectedIndex]);
 
     const handleSubmit = () => {
         if (selectedIndex !== null && !submitted) {
@@ -59,125 +59,102 @@ export default function RecognitionCanvas({
 
     const renderShape = (shape: Shape, index: number) => {
         const isSelected = selectedIndex === index;
-        const isHovered = false; // Can add hover state if needed
-
         return (
             <motion.div
                 key={index}
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                className={`relative cursor-pointer rounded-2xl p-4 border-4 transition-all ${
-                    isSelected
-                        ? 'border-blue-600 bg-blue-50 dark:bg-blue-900/20'
-                        : 'border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 hover:border-blue-400'
-                }`}
+                whileHover={!submitted ? { scale: 1.05 } : {}}
+                whileTap={!submitted ? { scale: 0.95 } : {}}
+                className={`relative rounded-2xl p-2 border-4 transition-all cursor-pointer bg-white dark:bg-gray-800
+                    ${isSelected
+                        ? 'border-blue-600 shadow-xl'
+                        : 'border-gray-200 dark:border-gray-700'
+                    }`}
                 onClick={() => !submitted && setSelectedIndex(index)}
             >
                 <svg
-                    width={SVG_WIDTH}
+                    width="100%"
                     height={SVG_HEIGHT}
-                    viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`}
+                    viewBox={`0 0 400 300`} // Fixed generic viewbox for scaling
                     className="mx-auto"
                 >
-                    {/* Render point cloud */}
-                    {shape.points.map((point, pidx) => {
-                        const x = point.x * SVG_WIDTH;
-                        const y = point.y * SVG_HEIGHT;
-
-                        return (
-                            <circle
-                                key={pidx}
-                                cx={x}
-                                cy={y}
-                                r={POINT_RADIUS}
-                                fill={isSelected ? "#2563eb" : "#6b7280"}
-                                opacity={0.8}
-                            />
-                        );
-                    })}
+                    {shape.points.map((point, pidx) => (
+                        <circle
+                            key={pidx}
+                            cx={point.x * 400}
+                            cy={point.y * 300}
+                            r={POINT_RADIUS}
+                            fill={isSelected ? "#2563eb" : "#6b7280"}
+                            opacity={0.8}
+                        />
+                    ))}
                 </svg>
-
-                {/* Selection indicator */}
                 {isSelected && (
-                    <div className="absolute top-2 right-2 bg-blue-600 text-white px-3 py-1 rounded-full text-sm font-bold">
-                        ✓ Selected
-                    </div>
+                    <div className="absolute top-2 right-2 bg-blue-600 text-white px-2 py-0.5 rounded-full text-xs font-bold">✓</div>
                 )}
-
-                {/* Shape label (optional, can be hidden for difficulty) */}
-                <div className="text-center mt-2 text-sm font-medium text-gray-600 dark:text-gray-400">
-                    Shape {String.fromCharCode(65 + index)}
-                </div>
             </motion.div>
         );
     };
 
     return (
-        <div className="w-full">
-            {/* Timer */}
+        <div className="w-full flex flex-col items-center">
+            {/* Header */}
             <div className="mb-6 text-center">
-                <div className={`text-4xl font-black ${
-                    timeRemaining < 10 ? 'text-red-600 animate-pulse' : 'text-blue-600'
-                }`}>
+                <h2 className="text-3xl font-black text-gray-900 dark:text-white mb-2">Match the Shape</h2>
+                <div className={`text-2xl font-bold ${timeRemaining < 10 ? 'text-red-600 animate-pulse' : 'text-blue-600'}`}>
                     ⏱️ {Math.ceil(timeRemaining)}s
                 </div>
-                <div className="text-lg text-gray-600 dark:text-gray-400 mt-2">
-                    Select the shape you saw before
+            </div>
+
+            <div className="flex flex-col lg:flex-row gap-8 w-full max-w-6xl">
+                {/* Left: Target Image */}
+                {targetImageUrl && (
+                    <div className="flex-1 flex flex-col items-center justify-center bg-gray-50 dark:bg-gray-900/50 rounded-3xl p-6 border-2 border-dashed border-gray-300">
+                        <h3 className="text-xl font-bold text-gray-500 mb-4 uppercase tracking-wider">Target Image</h3>
+                        <img
+                            src={`http://127.0.0.1:8000${targetImageUrl}`}
+                            alt="Target"
+                            className="max-w-full max-h-[300px] object-contain rounded-xl shadow-lg"
+                        />
+                    </div>
+                )}
+
+                {/* Right: Options */}
+                <div className="flex-1">
+                    <h3 className="text-xl font-bold text-gray-500 mb-4 text-center uppercase tracking-wider">Select Point Cloud</h3>
+                    <div className={`grid ${shapes.length === 3 ? 'grid-cols-2 lg:grid-cols-2' : 'grid-cols-2'} gap-4`}>
+                        {shapes.map((shape, index) => renderShape(shape, index))}
+                    </div>
                 </div>
             </div>
 
-            {/* Shapes grid */}
-            <div className={`grid ${
-                shapes.length === 3 ? 'grid-cols-3' : 'grid-cols-2'
-            } gap-6 mb-6`}>
-                {shapes.map((shape, index) => renderShape(shape, index))}
-            </div>
-
-            {/* Confidence slider */}
-            <div className="mb-6 bg-gray-100 dark:bg-gray-800 p-6 rounded-2xl">
-                <div className="text-lg font-bold text-gray-900 dark:text-white mb-4">
-                    How confident are you?
+            {/* Controls */}
+            <div className="mt-8 w-full max-w-2xl bg-gray-50 dark:bg-gray-900/50 p-6 rounded-3xl">
+                <div className="mb-6">
+                    <div className="text-lg font-bold text-gray-900 dark:text-white mb-2">Confidence Level</div>
+                    <Slider
+                        size="md"
+                        step={1}
+                        minValue={1}
+                        maxValue={5}
+                        value={confidence}
+                        onChange={(v) => setConfidence(v as number)}
+                        marks={[{ value: 1, label: "?" }, { value: 5, label: "!!!" }]}
+                        className="max-w-md mx-auto"
+                        isDisabled={submitted}
+                    />
                 </div>
-                <Slider
+
+                <Button
                     size="lg"
-                    step={1}
-                    minValue={1}
-                    maxValue={5}
-                    value={confidence}
-                    onChange={(value) => setConfidence(value as number)}
-                    className="mb-4"
-                    marks={[
-                        {value: 1, label: "Not Sure"},
-                        {value: 3, label: "Moderate"},
-                        {value: 5, label: "Very Sure"}
-                    ]}
                     color="primary"
-                    showTooltip={false}
-                    isDisabled={submitted}
-                />
-                <div className="text-center text-2xl font-bold text-blue-600">
-                    {"⭐".repeat(confidence)}
-                </div>
+                    variant="shadow"
+                    onClick={handleSubmit}
+                    isDisabled={selectedIndex === null || submitted}
+                    className="w-full text-xl font-black rounded-2xl py-6"
+                >
+                    {submitted ? "Submitted" : "Confirm Match"}
+                </Button>
             </div>
-
-            {/* Submit button */}
-            <Button
-                size="lg"
-                color="primary"
-                variant="shadow"
-                onClick={handleSubmit}
-                isDisabled={selectedIndex === null || submitted}
-                className="w-full text-2xl py-8 font-black rounded-2xl"
-            >
-                {submitted ? "Submitted! ✓" : "Submit Answer"}
-            </Button>
-
-            {/* Help text */}
-            {selectedIndex === null && !submitted && (
-                <div className="text-center text-gray-500 dark:text-gray-400 mt-4">
-                    Click on a shape to select it
-                </div>
-            )}
         </div>
     );
 }

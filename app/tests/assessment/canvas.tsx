@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { computeConvexHull, computePolygonArea } from "@/app/utils/geometry";
 
 type PointType = {
     x: number; // 0..1 normalized
@@ -25,6 +26,14 @@ interface AssessmentCanvasProps {
     submissions: Array<{ selected_index: number; timestamp: number }>;
     trueOrder: number[];
     mistakes: number;
+    kineticDataRef?: React.MutableRefObject<Array<{ t: number, area: number }>>;
+    // Feature Props
+    isPaused?: boolean;
+    memoryMode?: {
+        enabled: boolean;
+        sublevel: number; // 1, 2, 3 determines coverage
+    };
+    hiddenIndices?: number[]; // Added: Backend-driven indices to hide
 }
 
 export default function AssessmentCanvas({
@@ -36,11 +45,45 @@ export default function AssessmentCanvas({
     startTime,
     submissions,
     trueOrder,
+    kineticDataRef,
+    mistakes,
+    isPaused = false,
+    memoryMode,
+    hiddenIndices = [],
 }: AssessmentCanvasProps) {
     const [hoveredPoint, setHoveredPoint] = useState<number | null>(null);
     const [clickedPoints, setClickedPoints] = useState<Set<number>>(new Set());
     const [wrongClick, setWrongClick] = useState<number | null>(null);
     const [flashingPoints, setFlashingPoints] = useState<Set<number>>(new Set());
+
+    // Memory State
+    const [memoryPhase, setMemoryPhase] = useState<"preview" | "recall">("preview");
+    const [showHint, setShowHint] = useState(false);
+    const [hintActive, setHintActive] = useState(false); // If true, show labels temporarily
+    const lastInteractionRef = React.useRef<number>(Date.now());
+
+    // Calculate label visibility based on sublevel
+    // Sub 1: 10% hidden (90% visible) -> actually user said "10% unlabeled". So 90% labeled.
+    // Sub 2: 30% unlabeled.
+    // Sub 3: 60% unlabeled.
+    // Calculate label visibility based on backend response
+    const getLabelVisibility = (index: number) => {
+        if (!memoryMode?.enabled) return true;
+        if (memoryPhase === "preview") return true; // Always show in preview
+        if (hintActive) return true; // Show in hint
+
+        // Use backend provided indices
+        if (hiddenIndices && hiddenIndices.length > 0) {
+            return !hiddenIndices.includes(index);
+        }
+
+        // Fallback for probabilistic (should not happen with new backend)
+        const percentageHidden = memoryMode.sublevel === 1 ? 0.10 :
+            memoryMode.sublevel === 2 ? 0.30 :
+                0.60;
+        const hash = (index * 9973 + 12345) % 100;
+        return hash >= (percentageHidden * 100);
+    };
 
     // Refs for animation to avoid React render loop
     const pointGroupRefs = React.useRef<Map<number, SVGGElement>>(new Map());
@@ -51,16 +94,74 @@ export default function AssessmentCanvas({
     const SVG_WIDTH = 1000;
     const SVG_HEIGHT = 600;
     const PADDING = 60;
-    const POINT_RADIUS = 42;
-    const HOVER_RADIUS = 52;
-    const LINE_WIDTH = 10;
-    const CLOSING_LINE_WIDTH = 13;
+    const POINT_RADIUS = 18;
+    const HOVER_RADIUS = 24;
+    const LINE_WIDTH = 4;
+    const CLOSING_LINE_WIDTH = 6;
+
+    // Memory Phase Logic
+    // Memory Phase Logic with Countdown
+    const [countdown, setCountdown] = useState(4);
+
+    useEffect(() => {
+        if (memoryMode?.enabled && startTime) {
+            setMemoryPhase("preview");
+            setCountdown(4);
+            const duration = 4000;
+
+            // Timer for phase switch
+            const timer = setTimeout(() => {
+                setMemoryPhase("recall");
+                lastInteractionRef.current = Date.now();
+            }, duration);
+
+            // Interval for simple visual countdown
+            const interval = setInterval(() => {
+                setCountdown(prev => Math.max(0, prev - 1));
+            }, 1000);
+
+            return () => {
+                clearTimeout(timer);
+                clearInterval(interval);
+            };
+        } else {
+            setMemoryPhase("recall");
+        }
+    }, [memoryMode?.enabled, startTime]);
+
+    // Inactivity / Mistake Monitor for Hint
+    useEffect(() => {
+        if (!memoryMode?.enabled || memoryPhase === "preview") return;
+
+        const checkHintParams = () => {
+            const timeSinceLast = Date.now() - lastInteractionRef.current;
+            // > 20s inactivity OR > 5 repeated mistakes (assume mistakes passed in prop captures total)
+            // But we need "repeated mistakes" on current step? 
+            // "repeated mistakes > 5" usually means on the *same* target. 
+            // Props `mistakes` is total level mistakes. 
+            // Logic: If global mistakes > 5 (simple approximation) OR idle > 20s
+
+            if (timeSinceLast > 20000 && !hintActive) {
+                setShowHint(true);
+            }
+            // For mistakes, we'd ideally track local mistakes. 
+            // Let's rely on idle time mostly + global mistake count high?
+            // Or simpler: If mistakes > 5, always allow hint.
+        };
+
+        const interval = setInterval(checkHintParams, 1000);
+        return () => clearInterval(interval);
+    }, [memoryMode?.enabled, memoryPhase, hintActive, mistakes]);
 
     // Reset state when points change
     useEffect(() => {
         setHoveredPoint(null);
         setWrongClick(null);
         setFlashingPoints(new Set());
+        setHintActive(false);
+        setShowHint(false);
+        lastInteractionRef.current = Date.now();
+
         // Clean up animation on unmount or point change
         if (animationFrameRef.current !== null) {
             cancelAnimationFrame(animationFrameRef.current);
@@ -128,18 +229,54 @@ export default function AssessmentCanvas({
 
                 const elapsed = (Date.now() - startTimeRef.current) / 1000; // seconds
                 const { amplitude, frequency, driftingIndices } = driftParameters!;
+                const offsetMap = new Map<number, { x: number, y: number }>();
 
-                driftingIndices?.forEach(idx => {
+                driftingIndices?.forEach((idx, i) => {
                     const el = pointGroupRefs.current.get(idx);
                     if (el) {
-                        const angle = elapsed * frequency * 2 * Math.PI;
-                        const offsetX = Math.cos(angle) * amplitude * SVG_WIDTH;
-                        const offsetY = Math.sin(angle) * amplitude * SVG_HEIGHT;
+                        // Multi-harmonic noise for "jittery" organic feeling
+                        // Use prime number multipliers for non-repeating chaos
+                        const baseFreq = frequency * 2 * Math.PI;
+
+                        // Per-point offset based on index to prevent synchronous movement
+                        const phase = idx * 13.37;
+
+                        // Sum of sines = pseudo-random jitter
+                        // X component
+                        const noiseX = Math.sin(elapsed * baseFreq + phase)
+                            + 0.5 * Math.sin(elapsed * baseFreq * 2.3 + phase * 2)
+                            + 0.25 * Math.sin(elapsed * baseFreq * 5.7 + phase * 4);
+
+                        // Y component (phase shifted)
+                        const noiseY = Math.cos(elapsed * baseFreq * 1.1 + phase)
+                            + 0.5 * Math.cos(elapsed * baseFreq * 2.7 + phase * 3)
+                            + 0.25 * Math.cos(elapsed * baseFreq * 4.3 + phase * 5);
+
+                        const offsetX = noiseX * amplitude * SVG_WIDTH;
+                        const offsetY = noiseY * amplitude * SVG_HEIGHT;
 
                         // Use transform translate to move the group
                         el.setAttribute("transform", `translate(${offsetX}, ${offsetY})`);
+
+                        // Store current offset for Hull calculation
+                        offsetMap.set(idx, { x: noiseX * amplitude, y: noiseY * amplitude });
                     }
                 });
+
+                // Compute Kinetic Convex Hull Area
+                if (kineticDataRef) {
+                    const currentPoints = points.map(p => {
+                        const offset = offsetMap.get(p.index) || { x: 0, y: 0 };
+                        return { x: p.x + offset.x, y: p.y + offset.y };
+                    });
+
+                    const hull = computeConvexHull(currentPoints);
+                    const area = computePolygonArea(hull);
+
+                    // Throttle recording to ~10Hz to save data volume? Or keep 60Hz?
+                    // 60Hz is fine for local arrays.
+                    kineticDataRef.current.push({ t: elapsed, area });
+                }
 
                 animationFrameRef.current = requestAnimationFrame(animate);
             };
@@ -162,13 +299,21 @@ export default function AssessmentCanvas({
 
     // Handle point click
     const handlePointClick = (pointIndex: number) => {
+        // Block interaction conditions
+        if (isPaused) return;
+        if (memoryMode?.enabled && memoryPhase === "preview") return;
+
+        lastInteractionRef.current = Date.now(); // Update activity
+        setShowHint(false); // Hide hint if they interact (or maybe keep if they just clicked wrong?)
+
         const nextExpected = trueOrder[submissions.length];
 
         if (pointIndex === nextExpected) {
             onClickPoint(pointIndex);
         } else {
             setWrongClick(pointIndex);
-            setTimeout(() => setWrongClick(null), 300);
+            // Longer feedback duration
+            setTimeout(() => setWrongClick(null), 800);
             onClickPoint(pointIndex);
         }
     };
@@ -199,6 +344,7 @@ export default function AssessmentCanvas({
     // For this fix, let's treat the lines as connecting the *clicked* locations (which were drifting at click time).
     // BUT since we don't store the "drift at click time", the lines will connect to base positions.
     // This is a trade-off. If the user wants lines to connect to where the dot WAS, we need to capture that position on click.
+    // The drift is visual.
 
     const generateConnectionPath = (): string => {
         if (submissions.length === 0) return "";
@@ -263,7 +409,7 @@ export default function AssessmentCanvas({
                     />
                 )}
 
-                {points.map((point) => {
+                {points.map((point, i) => { // Added 'i' for unique key fallback
                     const coords = toSVGCoords(point);
                     const isClicked = clickedPoints.has(point.index);
                     const isHovered = hoveredPoint === point.index;
@@ -276,18 +422,28 @@ export default function AssessmentCanvas({
                     else if (isFlashing) fillColor = "rgb(234, 179, 8)";
                     else if (isClicked) fillColor = "rgb(34, 197, 94)";
 
+                    // Label Logic
+                    const showLabel = point.label && (
+                        isClicked ||
+                        getLabelVisibility(point.index)
+                    );
+
+                    // Question mark if memory hidden and not clicked
+                    const showQuestion = (testType === "memory" || memoryMode?.enabled) &&
+                        !showLabel && !isClicked && memoryPhase === "recall";
+
                     return (
                         <g
-                            key={point.index}
+                            key={`${point.index}-${i}`} // UNIQUE KEY FIX: Composite key
                             ref={(el) => {
                                 if (el) pointGroupRefs.current.set(point.index, el);
                                 else pointGroupRefs.current.delete(point.index);
                             }}
                             role="button"
                             onClick={() => handlePointClick(point.index)}
-                            onMouseEnter={() => setHoveredPoint(point.index)}
+                            onMouseEnter={() => !isPaused && setHoveredPoint(point.index)}
                             onMouseLeave={() => setHoveredPoint(null)}
-                            style={{ cursor: "pointer" }}
+                            style={{ cursor: (isPaused || memoryPhase === "preview") ? "default" : "pointer" }}
                             // Initial transform based on base coords
                             transform={`translate(0,0)`}
                         >
@@ -298,15 +454,32 @@ export default function AssessmentCanvas({
                                 fill={fillColor}
                                 stroke="white"
                                 strokeWidth={2}
-                                style={{ transition: "r 0.2s ease, fill 0.3s ease" }}
+                                style={{ transition: "r 0.2s ease, fill 0.3s ease", opacity: (memoryPhase === "preview" || memoryPhase === "recall") ? 1 : 0.5 }}
                             />
-                            {point.label && (
+                            {/* Mistake Feedback Overlay */}
+                            {isWrong && (
+                                <text
+                                    x={coords.x}
+                                    y={coords.y - radius - 10}
+                                    textAnchor="middle"
+                                    fontSize="20px"
+                                    fontWeight="bold"
+                                    fill="red"
+                                    stroke="white"
+                                    strokeWidth="0.5px"
+                                    pointerEvents="none"
+                                >
+                                    ❌ Mistake!
+                                </text>
+                            )}
+
+                            {showLabel && (
                                 <text
                                     x={coords.x}
                                     y={coords.y}
                                     textAnchor="middle"
                                     dominantBaseline="central"
-                                    fontSize="32px"
+                                    fontSize="18px" // Reduced
                                     fontWeight="bold"
                                     fill={isClicked ? "white" : "#1f2937"}
                                     pointerEvents="none"
@@ -315,13 +488,13 @@ export default function AssessmentCanvas({
                                     {point.label}
                                 </text>
                             )}
-                            {(testType === "memory" || testType === "combined") && !point.label && !isClicked && (
+                            {showQuestion && (
                                 <text
                                     x={coords.x}
                                     y={coords.y}
                                     textAnchor="middle"
                                     dominantBaseline="central"
-                                    fontSize="32px"
+                                    fontSize="24px" // Reduced from 32
                                     fontWeight="bold"
                                     fill="#9ca3af"
                                     pointerEvents="none"
@@ -334,6 +507,36 @@ export default function AssessmentCanvas({
                     );
                 })}
             </svg>
+
+            {/* Hints & Overlays */}
+            {memoryPhase === "preview" && (
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-50">
+                    {/* No localized background, just the message floating */}
+                    <div className="bg-blue-600/90 text-white px-8 py-6 rounded-2xl shadow-2xl backdrop-blur-md animate-in fade-in zoom-in duration-300 transform scale-105 border border-white/20">
+                        <h2 className="text-4xl font-black mb-2 tracking-tight text-center">MEMORIZE NOW</h2>
+                        <div className="flex items-center justify-center space-x-2">
+                            <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
+                            <p className="text-xl font-medium">Hiding labels in <span className="font-bold text-yellow-300 text-2xl mx-1">{countdown}</span>s...</p>
+                            <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {showHint && !hintActive && (
+                <div className="absolute bottom-8 right-8 animate-bounce">
+                    <button
+                        onClick={() => {
+                            setHintActive(true);
+                            setTimeout(() => setHintActive(false), 3000); // Show for 3s
+                            setShowHint(false);
+                        }}
+                        className="bg-yellow-400 hover:bg-yellow-500 text-yellow-900 font-bold py-3 px-6 rounded-full shadow-lg border-4 border-white transform transition hover:scale-105"
+                    >
+                        💡 Need a Hint?
+                    </button>
+                </div>
+            )}
         </div>
     );
 }

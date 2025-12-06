@@ -5,8 +5,8 @@ import { Button } from "@heroui/react";
 import { computeIntersection } from "@/lib/backend";
 
 interface PolygonData {
-    points: Array<{x: number, y: number}>;
-    velocity: {dx: number, dy: number};
+    points: Array<{ x: number, y: number }>;
+    velocity: { dx: number, dy: number };
 }
 
 interface IntersectionCanvasProps {
@@ -14,7 +14,8 @@ interface IntersectionCanvasProps {
     polygonB: PolygonData;
     thresholdPercentage: number;
     animationDurationMs: number;
-    onDetection: (detectionTime: number, actualIntersectionTime: number, actualArea: number) => void;
+    onDetection?: (detectionTime: number, actualIntersectionTime: number, actualArea: number) => void;
+    onSubmitDrawing?: (drawnPath: Array<{ x: number, y: number }>, actualIntersection: Array<{ x: number, y: number }>, time: number) => void;
     startTime: number | null;
 }
 
@@ -23,8 +24,8 @@ export default function IntersectionCanvas({
     polygonB,
     thresholdPercentage,
     animationDurationMs,
-    onDetection,
-    startTime
+    startTime,
+    onSubmitDrawing
 }: IntersectionCanvasProps) {
     const [currentPosA, setCurrentPosA] = useState(polygonA.points);
     const [currentPosB, setCurrentPosB] = useState(polygonB.points);
@@ -32,7 +33,7 @@ export default function IntersectionCanvas({
     const [detected, setDetected] = useState(false);
     const [animationActive, setAnimationActive] = useState(false);
     const [actualIntersectionTime, setActualIntersectionTime] = useState<number | null>(null);
-    
+
     const animationRef = useRef<number | null>(null);
     const lastFrameTime = useRef<number>(0);
 
@@ -54,12 +55,7 @@ export default function IntersectionCanvas({
         };
     }, [startTime, detected]);
 
-    // Check for intersection continuously
-    useEffect(() => {
-        if (animationActive && startTime && !actualIntersectionTime) {
-            checkIntersection();
-        }
-    }, [currentPosA, currentPosB, animationActive]);
+    // Continuous checking removed for perf, only check on freeze
 
     const animate = () => {
         if (!animationActive || detected) return;
@@ -95,123 +91,150 @@ export default function IntersectionCanvas({
 
             // Check if threshold is met
             if (result.intersection_percentage >= thresholdPercentage && !actualIntersectionTime && startTime) {
-                const intersectTime = Date.now() - startTime;
-                setActualIntersectionTime(intersectTime);
+                setActualIntersectionTime(Date.now() - startTime);
             }
         } catch (error) {
             console.error("Intersection computation failed:", error);
         }
     };
 
-    const handleDetect = async () => {
-        if (detected || !startTime) return;
+    // Drawing State
+    const [isDrawingMode, setIsDrawingMode] = useState(false);
+    const [drawnPath, setDrawnPath] = useState<Array<{ x: number, y: number }>>([]);
+    const [isPenDown, setIsPenDown] = useState(false);
+    const canvasRef = useRef<HTMLDivElement>(null);
 
-        setDetected(true);
+    // Freeze animation when entering drawing mode
+    const handleFreeze = () => {
         setAnimationActive(false);
-
-        if (animationRef.current) {
-            cancelAnimationFrame(animationRef.current);
-        }
-
-        // Get final intersection data
-        const result = await computeIntersection(currentPosA, currentPosB);
-        setIntersectionData(result);
-
-        const detectionTime = Date.now() - startTime;
-        const actualTime = actualIntersectionTime || detectionTime;
-
-        onDetection(detectionTime, actualTime, result.intersection_area);
+        if (animationRef.current) cancelAnimationFrame(animationRef.current);
+        setIsDrawingMode(true);
+        // Compute actual intersection once at freeze time for grading
+        checkIntersection();
     };
 
-    const toSVGCoords = (points: Array<{x: number, y: number}>) => {
+    const handlePenDown = (e: React.MouseEvent | React.TouchEvent) => {
+        if (!isDrawingMode || detected) return;
+        setIsPenDown(true);
+        const pt = getPoint(e);
+        if (pt) setDrawnPath([pt]);
+    };
+
+    const handlePenMove = (e: React.MouseEvent | React.TouchEvent) => {
+        if (!isPenDown || detected) return;
+        const pt = getPoint(e);
+        if (pt) setDrawnPath(prev => [...prev, pt]);
+    };
+
+    const handlePenUp = () => {
+        setIsPenDown(false);
+    };
+
+    const getPoint = (e: any) => {
+        if (!canvasRef.current) return null;
+        const rect = canvasRef.current.getBoundingClientRect();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        return {
+            x: (clientX - rect.left) / rect.width,
+            y: (clientY - rect.top) / rect.height
+        };
+    };
+
+    const handleSubmitDrawing = async () => {
+        if (detected || drawnPath.length < 3) return;
+        setDetected(true);
+        setIsDrawingMode(false);
+
+        // Final intersection data is already in intersectionData (from handleFreeze check)
+        // But let's re-verify
+        const result = await computeIntersection(currentPosA, currentPosB);
+        const detectionTime = Date.now() - (startTime || 0);
+
+        // Pass DRAWN path and ACTUAL path to parent for grading
+        if (onSubmitDrawing) {
+            onSubmitDrawing(drawnPath, result.intersection_polygon || [], detectionTime);
+        }
+    };
+
+    // Helpers
+    const toSVGCoords = (points: Array<{ x: number, y: number }>) => {
         return points.map(p => ({
             x: p.x * SVG_WIDTH,
             y: p.y * SVG_HEIGHT
         }));
     };
 
-    const renderPolygon = (points: Array<{x: number, y: number}>, color: string, label: string) => {
+    const renderPolygon = (points: Array<{ x: number, y: number }>, color: string, label: string) => {
         const svgPoints = toSVGCoords(points);
-        const pathData = svgPoints.map((p, i) => 
+        const pathData = svgPoints.map((p, i) =>
             `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`
         ).join(' ') + ' Z';
 
         return (
-            <>
-                <path
-                    d={pathData}
-                    fill={color}
-                    fillOpacity={0.3}
-                    stroke={color}
-                    strokeWidth={3}
-                />
-                <text
-                    x={svgPoints[0].x}
-                    y={svgPoints[0].y - 10}
-                    fontSize="20"
-                    fontWeight="bold"
-                    fill={color}
-                >
+            <g>
+                <path d={pathData} fill={color} fillOpacity={0.3} stroke={color} strokeWidth={3} />
+                {svgPoints.map((p, i) => (
+                    <circle key={i} cx={p.x} cy={p.y} r={4} fill={color} stroke="white" strokeWidth={1.5} />
+                ))}
+                <text x={svgPoints[0].x} y={svgPoints[0].y - 15} fontSize="24" fontWeight="black" fill={color} stroke="white" strokeWidth="0.5">
                     {label}
                 </text>
-            </>
+            </g>
         );
     };
 
     const renderIntersection = () => {
         if (!intersectionData?.intersection_polygon) return null;
-
         const svgPoints = toSVGCoords(intersectionData.intersection_polygon);
-        const pathData = svgPoints.map((p, i) => 
+        const pathData = svgPoints.map((p, i) =>
             `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`
         ).join(' ') + ' Z';
 
         return (
-            <path
-                d={pathData}
-                fill="#10b981"
-                fillOpacity={0.6}
-                stroke="#10b981"
-                strokeWidth={4}
-            />
+            <g>
+                <defs>
+                    <pattern id="diagonalHatch" width="10" height="10" patternTransform="rotate(45 0 0)" patternUnits="userSpaceOnUse">
+                        <line x1="0" y1="0" x2="0" y2="10" style={{ stroke: '#10b981', strokeWidth: 2 }} />
+                    </pattern>
+                </defs>
+                <path d={pathData} fill="url(#diagonalHatch)" fillOpacity={0.8} stroke="#10b981" strokeWidth={4} strokeDasharray="8 4" />
+                {svgPoints.map((p, i) => (
+                    <circle key={i} cx={p.x} cy={p.y} r={5} fill="#10b981" stroke="white" strokeWidth={2} />
+                ))}
+            </g>
         );
     };
 
-    const progressPercentage = intersectionData?.intersection_percentage || 0;
-    const thresholdMet = progressPercentage >= thresholdPercentage;
-
     return (
-        <div className="w-full">
-            {/* Status bar */}
-            <div className="mb-4 bg-gray-100 dark:bg-gray-800 p-6 rounded-2xl">
-                <div className="flex items-center justify-between mb-4">
-                    <div className="text-lg font-bold text-gray-900 dark:text-white">
-                        Intersection Progress
-                    </div>
-                    <div className={`text-3xl font-black ${
-                        thresholdMet ? 'text-green-600 animate-pulse' : 'text-gray-600'
-                    }`}>
-                        {progressPercentage.toFixed(1)}%
-                    </div>
+        <div className="w-full select-none">
+            <div className="bg-white dark:bg-gray-800 rounded-2xl p-4 mb-6 relative">
+                {/* Drawing Overlay */}
+                <div
+                    ref={canvasRef}
+                    className="absolute inset-4 z-10 cursor-crosshair touch-none"
+                    style={{ pointerEvents: isDrawingMode ? 'auto' : 'none' }}
+                    onMouseDown={handlePenDown}
+                    onMouseMove={handlePenMove}
+                    onMouseUp={handlePenUp}
+                    onMouseLeave={handlePenUp}
+                    onTouchStart={handlePenDown}
+                    onTouchMove={handlePenMove}
+                    onTouchEnd={handlePenUp}
+                >
+                    {/* Visualizing the draw path on top of SVG */}
+                    <svg width="100%" height="100%" viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`} style={{ overflow: 'visible' }}>
+                        {drawnPath.length > 1 && (
+                            <path
+                                d={`M ${drawnPath.map(p => `${p.x * SVG_WIDTH} ${p.y * SVG_HEIGHT}`).join(' L ')} Z`}
+                                fill="rgba(255, 255, 0, 0.3)"
+                                stroke="yellow"
+                                strokeWidth="4"
+                            />
+                        )}
+                    </svg>
                 </div>
 
-                <div className="w-full bg-gray-300 dark:bg-gray-700 rounded-full h-6 overflow-hidden">
-                    <div
-                        className={`h-full transition-all duration-300 ${
-                            thresholdMet ? 'bg-green-600' : 'bg-blue-600'
-                        }`}
-                        style={{ width: `${Math.min(100, progressPercentage)}%` }}
-                    />
-                </div>
-
-                <div className="text-sm text-gray-600 dark:text-gray-400 mt-2 text-center">
-                    Threshold: {thresholdPercentage.toFixed(1)}% 
-                    {thresholdMet && " ✓ REACHED"}
-                </div>
-            </div>
-
-            {/* Canvas */}
-            <div className="bg-white dark:bg-gray-800 rounded-2xl p-4 mb-6">
                 <svg
                     width={SVG_WIDTH}
                     height={SVG_HEIGHT}
@@ -219,33 +242,53 @@ export default function IntersectionCanvas({
                     className="mx-auto bg-gray-50 dark:bg-gray-900 rounded-xl"
                     style={{ maxWidth: "100%", height: "auto" }}
                 >
-                    {/* Render polygons */}
-                    {renderPolygon(currentPosA, "#3b82f6", "Polygon A")}
-                    {renderPolygon(currentPosB, "#ef4444", "Polygon B")}
-                    
-                    {/* Render intersection area */}
+                    {renderPolygon(currentPosA, "#3b82f6", "A")}
+                    {renderPolygon(currentPosB, "#ef4444", "B")}
+
+                    {/* Only show actual intersection AFTER detection/submission */}
                     {detected && renderIntersection()}
                 </svg>
             </div>
 
-            {/* Detection button */}
-            <Button
-                size="lg"
-                color={thresholdMet ? "success" : "primary"}
-                variant="shadow"
-                onClick={handleDetect}
-                disabled={detected}
-                className="w-full text-2xl py-8 font-black rounded-2xl"
-            >
-                {detected ? "Detection Recorded! ✓" : "DETECT INTERSECTION NOW"}
-            </Button>
+            <div className="flex justify-center gap-4">
+                {!isDrawingMode && !detected && (
+                    <Button
+                        size="lg"
+                        color="secondary"
+                        onClick={handleFreeze}
+                        className="text-2xl py-8 font-black w-full"
+                    >
+                        FREEZE & DRAW INTERSECTION
+                    </Button>
+                )}
 
-            {/* Instructions */}
-            {!detected && (
-                <div className="text-center text-gray-600 dark:text-gray-400 mt-4 text-lg">
-                    Press the button when the polygons overlap by {thresholdPercentage}% or more
-                </div>
-            )}
+                {isDrawingMode && (
+                    <div className="flex flex-col w-full gap-2">
+                        <div className="text-center text-gray-600 dark:text-gray-400 font-bold mb-2">
+                            Draw around the overlapping area!
+                        </div>
+                        <div className="flex gap-4">
+                            <Button
+                                size="lg"
+                                color="danger"
+                                variant="flat"
+                                onClick={() => setDrawnPath([])}
+                                className="w-1/3 font-bold"
+                            >
+                                Clear
+                            </Button>
+                            <Button
+                                size="lg"
+                                color="success"
+                                onClick={handleSubmitDrawing}
+                                className="w-2/3 font-black"
+                            >
+                                SUBMIT DRAWING
+                            </Button>
+                        </div>
+                    </div>
+                )}
+            </div>
 
             {/* Results */}
             {detected && intersectionData && (
@@ -254,11 +297,10 @@ export default function IntersectionCanvas({
                         Detection Results
                     </div>
                     <div className="space-y-2 text-gray-700 dark:text-gray-300">
-                        <div>Intersection Area: {intersectionData.intersection_area.toFixed(4)}</div>
-                        <div>Intersection %: {intersectionData.intersection_percentage.toFixed(2)}%</div>
-                        <div>Threshold: {thresholdPercentage}%</div>
-                        <div className={thresholdMet ? "text-green-600 font-bold" : "text-red-600 font-bold"}>
-                            {thresholdMet ? "✓ Threshold Met" : "✗ Below Threshold"}
+                        <div>Draw Area: {(computeFormattedArea(drawnPath)).toFixed(4)}</div>
+                        <div>Actual Area: {(intersectionData.intersection_area || 0).toFixed(4)}</div>
+                        <div className="font-bold text-blue-600">
+                            (Detailed scoring computed by backend)
                         </div>
                     </div>
                 </div>
@@ -266,3 +308,15 @@ export default function IntersectionCanvas({
         </div>
     );
 }
+
+// Helper to compute area on frontend for immediate feedback (Show off)
+function computeFormattedArea(points: Array<{ x: number, y: number }>) {
+    // simple shoelace
+    let area = 0;
+    const n = points.length;
+    for (let i = 0; i < n; i++) {
+        area += (points[i].x * points[(i + 1) % n].y - points[(i + 1) % n].x * points[i].y);
+    }
+    return Math.abs(area / 2);
+}
+
