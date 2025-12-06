@@ -21,7 +21,7 @@ type LevelTimeData = {
 };
 
 // Test configuration: 7 levels, 3 sublevels each
-const MAX_LEVELS = 7;
+const MAX_LEVELS = 8;
 const SUBLEVELS_PER_LEVEL = 3;
 
 export default function AssessmentPage() {
@@ -167,11 +167,11 @@ export default function AssessmentPage() {
             case 1: return "Focused Attention";
             case 2: return "Visuospatial Memory";
             case 3: return "Sustained Attention";
-            case 4: return "Shape Recognition";
-            case 5: return "Intersection";
+            case 4: return "Dual Task";
+            case 5: return "Shape Recognition";
             case 6: return "Intersection Drawing";
-            case 7: return "Maze Tracing";
-            case 8: return "Navigation";
+            case 7: return "Polygon Construction";
+            case 8: return "Maze Navigation";
             default: return "Unknown";
         }
     };
@@ -191,10 +191,11 @@ export default function AssessmentPage() {
             if (level === 1) await start(1, sublevel, "basic");
             else if (level === 2) await start(2, sublevel, "memory");
             else if (level === 3) await start(3, sublevel, "attention");
-            else if (level === 4) await startLevel5(4, sublevel);
-            else if (level === 5) await startLevel6(5, sublevel);
-            else if (level === 6) await startLevel7(6, sublevel);
-            else if (level === 7) await startLevel8(7, sublevel);
+            else if (level === 4) await start(4, sublevel, "combined"); // L4: Dual Task
+            else if (level === 5) await startLevel5(5, sublevel);       // L5: Recognition
+            else if (level === 6) await startLevel6(6, sublevel);       // L6: Intersection
+            else if (level === 7) await startLevel7(7, sublevel);       // L7: Reconstruction
+            else if (level === 8) await startLevel8(8, sublevel);       // L8: Maze/Navigation
             else await start(level, sublevel, "basic");
 
         } catch (error) {
@@ -493,7 +494,8 @@ export default function AssessmentPage() {
                                 {currentLevel === 4 && "Combined Test: Points are drifting AND hidden. Focus hard to track the correct sequence!"}
                                 {currentLevel === 5 && "Shape Recognition: Analyze the point cloud and identify the object."}
                                 {currentLevel === 6 && "Intersection Drawing: Freeze the shapes and draw the overlapping region!"}
-                                {currentLevel === 7 && "Maze Tracing: Trace the path through the maze without touching the walls."}
+                                {currentLevel === 7 && "Polygon Construction: Memorize the shape and reconstruct it exactly!"}
+                                {currentLevel === 8 && "Maze Navigation: Navigate from the start to the end without touching the walls!"}
                             </p>
                         </motion.div>
                     </motion.div>
@@ -616,24 +618,6 @@ export default function AssessmentPage() {
                                 />
                             )}
 
-                            {currentLevel === 7 && targetPolygon && (
-                                <MazeCanvas
-                                    path={targetPolygon} // Reusing targetPolygon state for maze path
-                                    leftWall={mazeLeftWall}
-                                    rightWall={mazeRightWall}
-                                    timeLimitSeconds={15} // Direct tracing doesn't need huge time
-                                    onComplete={async (userPath, timestamps) => {
-                                        if (!currentLevelStartTime) return;
-                                        const result = await submitReconstruction(
-                                            userPath,
-                                            Date.now() - currentLevelStartTime,
-                                            timestamps
-                                        );
-                                        if (result) handleLevelComplete(result);
-                                    }}
-                                />
-                            )}
-
                             {currentLevel === 6 && polygonA && polygonB && (
                                 <IntersectionCanvas
                                     key={`intersection-${currentLevel}-${currentSublevel}`}
@@ -655,7 +639,8 @@ export default function AssessmentPage() {
                                     }}
                                 />
                             )}
-                            {currentLevel === 7 && (
+
+                            {currentLevel === 7 && targetPolygon && (
                                 <ReconstructionCanvas
                                     key={`reconstruction-${currentLevel}-${currentSublevel}`}
                                     targetPolygon={targetPolygon}
@@ -667,6 +652,7 @@ export default function AssessmentPage() {
                                     startTime={startTime}
                                 />
                             )}
+
                             {currentLevel === 8 && (
                                 <NavigationCanvas
                                     leftWall={leftWall}

@@ -1,36 +1,85 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Cognitive Assessment Application
 
-## Getting Started
+## Overview
+A comprehensive digital cognitive assessment tool designed to evaluate various cognitive domains including memory, attention, executive function, and motor control. The application leverages **Computational Geometry** algorithms (convex hulls, kinetic data structures, polygon reconstruction) to generate dynamic, randomized tasks and provide precise, quantitative analysis of user performance.
 
-First, run the development server:
+## Architecture
 
+*   **Frontend**: Next.js 14 (App Router), React, Tailwind CSS, HeroUI, Framer Motion, Recharts.
+*   **Backend**: Python FastAPI.
+*   **Computational Engine**: NumPy, SciPy, Shapely (for geometric operations).
+*   **Data Storage**: LocalStorage (Client-side) & In-Memory/JSON (Backend Analysis).
+
+## Assessment Levels
+
+1.  **Path Integration (Level 1)**: Connect points in numerical order. Measures basic motor planning and processing speed.
+2.  **Visuospatial Memory (Level 2)**: Recall and connect points after they disappear. Measures spatial working memory.
+3.  **Sustained Attention (Level 3)**: Interaction with moving targets (Kinetic Points). Measures attention stability and tracking.
+4.  **Dual Task (Level 4)**: Combined memory and attention task with drifting, hidden targets. Measures cognitive load handling.
+5.  **Shape Recognition (Level 5)**: Identify shapes from point clouds using random shape generation. Measures visual recognition.
+6.  **Intersection Drawing (Level 6)**: Visualize and draw the intersection of two moving convex polygons. Measures executive function and geometric reasoning.
+7.  **Polygon Construction (Level 7)**: Memorize and reconstruct complex polygons. Measures fine motor control and shape memory.
+8.  **Maze Navigation (Level 8)**: Navigate a generated maze without touching walls. Measures tremor, motor stability, and planning.
+
+## Prerequisites
+
+*   **Node.js**: v18 or higher.
+*   **Python**: v3.9 or higher.
+
+## Installation
+
+### 1. Clone the Repository
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+git clone <repository-url>
+cd cognitive-app
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### 2. Backend Setup
+Navigate to the backend directory and install dependencies:
+```bash
+cd "cognitive backend"
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install -r requirements.txt
+```
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### 3. Frontend Setup
+Navigate to the root directory (or keep a separate terminal open):
+```bash
+# Return to root if in backend
+cd ..
+npm install
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Running the Application
 
-## Learn More
+### Step 1: Start the Backend (API)
+The backend must be running for assessment generation and scoring.
+```bash
+cd "cognitive backend"
+# Ensure venv is active
+uvicorn main:app --reload --port 8000
+```
+*The API will be available at `http://localhost:8000`.*
 
-To learn more about Next.js, take a look at the following resources:
+### Step 2: Start the Frontend
+```bash
+# In the root directory
+npm run dev
+```
+*The application will launch at `http://localhost:3000`.*
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Usage Guide
+1.  Open `http://localhost:3000`.
+2.  Click **"Begin Assessment"**.
+3.  Enter your name to log in (Creates a session on your dashboard).
+4.  View your **Dashboard** to see previous results or start a new test.
+5.  Click **"Start Assessment Now"** to begin the full suite (Levels 1-8).
+6.  Upon completion, view your **Detailed Results** and **Cognitive Profile**.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Troubleshooting
+*   **Backend Connection Error**: Ensure the backend is running on port 8000.
+*   **Build Errors**: If `npm run dev` fails, try deleting `.next` folder and running `npm run dev` again.
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+---
+Developed for Computational Geometry Final Project.

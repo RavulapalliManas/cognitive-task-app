@@ -658,3 +658,90 @@ def compute_funnel_path(start: Dict[str, float], end: Dict[str, float],
         centerline.append({'x': cx, 'y': cy})
         
     return centerline
+
+def generate_convex_polygon(n_vertices: int, seed: int = None, bbox: tuple = (0, 0, 1, 1)) -> List[Dict[str, float]]:
+    """
+    Generate a simple random convex polygon.
+    Algorithm: Generate random angles, sort them, and compute vectors.
+    """
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+
+    # 1. Generate random x and y coordinates, sort them
+    x = sorted([random.uniform(bbox[0], bbox[2]) for _ in range(n_vertices)])
+    y = sorted([random.uniform(bbox[1], bbox[3]) for _ in range(n_vertices)])
+
+    # 2. Divide into two chains (min to max, max to min)
+    min_x, max_x = x[0], x[-1]
+    min_y, max_y = y[0], y[-1]
+
+    # Randomly distribute intermediate points between top/bottom or left/right chains?
+    # Actually, Valtr algorithm is better for true uniform distribution,
+    # but a simpler radial sort approach works well for "convex enough" visual tasks.
+    
+    # Simple Radial Method:
+    # 1. Generate random points
+    points = []
+    for _ in range(n_vertices):
+        points.append({
+            'x': random.uniform(bbox[0], bbox[2]),
+            'y': random.uniform(bbox[1], bbox[3])
+        })
+    
+    # 2. Compute centroid
+    cx = sum(p['x'] for p in points) / n_vertices
+    cy = sum(p['y'] for p in points) / n_vertices
+    
+    # 3. Sort by angle to make simple
+    points.sort(key=lambda p: math.atan2(p['y'] - cy, p['x'] - cx))
+    
+    # 4. Convexify (Graham scan or just hull?)
+    # Users want "Convex". The radial sort of random points creates a Star-shaped polygon, not necessarily convex.
+    # To ensure convex, let's just take the Convex Hull of a slightly larger set of points until we match count.
+    # OR, use the Valtr algorithm.
+    
+    # Let's use simple Convex Hull of random points, iterating until we get exact N.
+    # If N is small (6-10), this is fast.
+    
+    points_array = np.array([[p['x'], p['y']] for p in points])
+    from scipy.spatial import ConvexHull
+    
+    # Generate excess points to ensure hull has enough vertices
+    attempts = 0
+    while attempts < 100:
+        candidates = np.random.uniform(
+            low=[bbox[0], bbox[1]], 
+            high=[bbox[2], bbox[3]], 
+            size=(n_vertices * 3, 2) # oversample
+        )
+        hull = ConvexHull(candidates)
+        hull_indices = hull.vertices
+        
+        if len(hull_indices) >= n_vertices:
+            # We have enough vertices on the hull. Pick N.
+            selected_indices = hull_indices[:n_vertices]
+            # Since it's a hull, any subset of vertices is also convex? 
+            # No, deleting a vertex from a convex polygon keeps it convex.
+            
+            # Sort them radially just to be safe (hull.vertices usually sorted counterclockwise).
+            final_pts = candidates[selected_indices]
+            
+            # Center it? No need.
+            return [{'x': float(p[0]), 'y': float(p[1])} for p in final_pts]
+            
+        attempts += 1
+        
+    # Fallback: Regular polygon with jitter
+    cx, cy = (bbox[0]+bbox[2])/2, (bbox[1]+bbox[3])/2
+    radius = min(bbox[2]-bbox[0], bbox[3]-bbox[1]) * 0.4
+    final_pts = []
+    for i in range(n_vertices):
+        angle = 2 * math.pi * i / n_vertices
+        r = radius * random.uniform(0.8, 1.0)
+        final_pts.append({
+            'x': cx + r * math.cos(angle),
+            'y': cy + r * math.sin(angle)
+        })
+        
+    return final_pts
